@@ -3,14 +3,14 @@ name: Run LinkedIn Scraper
 on:
   schedule:
     - cron: '0 * * * *'  # Every hour at minute 0
-  workflow_dispatch:  # Manual trigger with inputs
+  workflow_dispatch:
     inputs:
       country:
-        description: 'Country to scrape'
+        description: 'Country to scrape jobs for'
         required: true
         default: 'Mauritius'
       specialty:
-        description: 'Job specialty/keywords'
+        description: 'Job specialty or keywords (e.g., software engineer)'
         required: false
         default: ''
 
@@ -20,10 +20,17 @@ jobs:
     env:
       WP_USERNAME: ${{ secrets.WP_USERNAME }}
       WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-      GH_PAT: ${{ secrets.GH_PAT }}
+      COUNTRY: ${{ github.event.inputs.country || 'Mauritius' }}
+      SPECIALTY: ${{ github.event.inputs.specialty || '' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log inputs
+        run: |
+          echo "Running scraper with COUNTRY=$COUNTRY, SPECIALTY=$SPECIALTY"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,12 +43,13 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run scraper
-        run: python script.py --country "${{ inputs.country }}" --specialty "${{ inputs.specialty }}"
+        run: python scraper.py
 
       - name: Commit changes
         run: |
           git config --local user.email "github-actions@github.com"
           git config --local user.name "GitHub Actions"
-          git add mauritius_processed_job_ids.csv last_processed_page.txt || true
-          git commit -m "Update processed files after scrape" || echo "No changes to commit"
+          git add mauritius_processed_job_ids.csv last_processed_page.txt scraped_jobs.json || true
+          git status
+          git commit -m "Update processed files and live jobs after scrape" || echo "No changes to commit"
           git push || echo "No changes to push"
