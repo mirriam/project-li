@@ -20,6 +20,7 @@ jobs:
     env:
       WP_USERNAME: ${{ secrets.WP_USERNAME }}
       WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+      GH_PAT: ${{ secrets.GH_PAT }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
