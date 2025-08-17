@@ -11,6 +11,7 @@ import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
+import argparse
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,8 +28,8 @@ WP_COMPANY_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/company"
 WP_MEDIA_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/media"
 WP_JOB_TYPE_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job_listing_type"
 WP_JOB_REGION_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job_listing_region"
-WP_USERNAME = "mary"
-WP_APP_PASSWORD = "Piab Mwog pfiq pdfK BOGH hDEy"
+WP_USERNAME = os.environ.get('WP_USERNAME')
+WP_APP_PASSWORD = os.environ.get('WP_APP_PASSWORD')
 PROCESSED_IDS_FILE = "mauritius_processed_job_ids.csv"
 LAST_PAGE_FILE = "last_processed_page.txt"
 JOB_TYPE_MAPPING = {
@@ -69,11 +70,6 @@ def normalize_for_deduplication(text):
     text = re.sub(r'[^\w\s]', '', text)  # Remove punctuation
     text = re.sub(r'\s+', '', text)      # Remove all whitespace
     return text.lower()
-
-def generate_job_id(job_title, company_name):
-    """Generate a unique job ID based on job title and company name."""
-    combined = f"{job_title}_{company_name}"
-    return hashlib.md5(combined.encode()).hexdigest()[:16]
 
 def split_paragraphs(text, max_length=200):
     """Split large paragraphs into smaller ones, each up to max_length characters."""
@@ -117,21 +113,6 @@ def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
         logger.error(f"Failed to get or create {taxonomy} term {term_name}: {str(e)}")
         return None
 
-def check_existing_job(job_title, company_name, auth_headers):
-    """Check if a job with the same title and company already exists on WordPress."""
-    check_url = f"{WP_URL}?search={job_title}&meta_key=_company_name&meta_value={company_name}"
-    try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
-        response.raise_for_status()
-        posts = response.json()
-        if posts:
-            logger.info(f"Found existing job on WordPress: {job_title} at {company_name}, Post ID: {posts[0].get('id')}")
-            return posts[0].get('id'), posts[0].get('link')
-        return None, None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to check existing job {job_title} at {company_name}: {str(e)}")
-        return None, None
-
 def save_company_to_wordpress(index, company_data, wp_headers):
     company_name = company_data.get("company_name", "")
     company_details = company_data.get("company_details", "")
@@ -142,18 +123,18 @@ def save_company_to_wordpress(index, company_data, wp_headers):
     company_type = company_data.get("company_type", "")
     company_address = company_data.get("company_address", "")
     
-    # Check if company already exists
+    # Check if company already exists to avoid duplicates
     check_url = f"{WP_COMPANY_URL}?search={company_name}"
     try:
         response = requests.get(check_url, headers=wp_headers, timeout=10, verify=False)
-        response.raise_for_status()
-        posts = response.json()
-        if posts:
-            post = posts[0]
-            logger.info(f"Found existing company {company_name}: Post ID {post.get('id')}, URL {post.get('link')}")
-            return post.get("id"), post.get("link")
+        if response.status_code == 200:
+            posts = response.json()
+            for post in posts:
+                if post['title']['rendered'].lower() == company_name.lower():
+                    logger.info(f"Company {company_name} already exists: Post ID {post.get('id')}, URL {post.get('link')}")
+                    return post.get("id"), post.get("link")
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to check existing company {company_name}: {str(e)}")
+        logger.error(f"Failed to check for existing company {company_name}: {str(e)}")
 
     attachment_id = 0
     if company_logo:
@@ -214,12 +195,19 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
     company_industry = job_data.get("company_industry", "")
     company_founded = job_data.get("company_founded", "")
     
-    # Check if job already exists on WordPress
-    existing_post_id, existing_post_url = check_existing_job(job_title, company_name, auth_headers)
-    if existing_post_id:
-        logger.info(f"Skipping duplicate job: {job_title} at {company_name}, already posted with Post ID: {existing_post_id}")
-        print(f"Job '{job_title}' at {company_name} skipped - already posted on WordPress. Post ID: {existing_post_id}, URL: {existing_post_url}")
-        return existing_post_id, existing_post_url
+    # Check if job already exists to avoid duplicates
+    job_id = hashlib.md5(job_url.encode()).hexdigest()[:16]
+    check_url = f"{WP_URL}?search={sanitize_text(job_title)}"
+    try:
+        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
+        if response.status_code == 200:
+            posts = response.json()
+            for post in posts:
+                if post['meta']['_job_title'].lower() == sanitize_text(job_title).lower() and post['meta']['_company_name'].lower() == sanitize_text(company_name).lower():
+                    logger.info(f"Job {job_title} from {company_name} already exists: Post ID {post.get('id')}, URL {post.get('link')}")
+                    return post.get("id"), post.get("link")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to check for existing job {job_title}: {str(e)}")
 
     application = ''
     if '@' in job_data.get("description_application_info", ""):
@@ -287,56 +275,38 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
         logger.error(f"Failed to post job {job_title}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}")
         return None, None
 
-def load_processed_ids():
-    """Load processed job IDs from file."""
-    processed_ids = set()
-    try:
-        if os.path.exists(PROCESSED_IDS_FILE):
-            with open(PROCESSED_IDS_FILE, "r") as f:
-                processed_ids = set(line.strip() for line in f if line.strip())
-            logger.info(f"Loaded {len(processed_ids)} processed job IDs from {PROCESSED_IDS_FILE}")
-    except Exception as e:
-        logger.error(f"Failed to load processed IDs from {PROCESSED_IDS_FILE}: {str(e)}")
-    return processed_ids
-
-def save_processed_id(job_id):
-    """Append a single job ID to the processed IDs file."""
-    try:
-        with open(PROCESSED_IDS_FILE, "a") as f:
-            f.write(f"{job_id}\n")
-        logger.info(f"Saved job ID {job_id} to {PROCESSED_IDS_FILE}")
-    except Exception as e:
-        logger.error(f"Failed to save job ID {job_id} to {PROCESSED_IDS_FILE}: {str(e)}")
-
 def load_last_page():
-    """Load the last processed page number."""
+    """Load the last processed page number from file, reset to 0 if invalid or too high."""
     try:
-        if os.path.exists(LAST_PAGE_FILE):
-            with open(LAST_PAGE_FILE, "r") as f:
-                page = int(f.read().strip())
-                logger.info(f"Loaded last processed page: {page}")
-                return page
-    except Exception as e:
-        logger.error(f"Failed to load last page from {LAST_PAGE_FILE}: {str(e)}")
-    return 0
+        with open(LAST_PAGE_FILE, "r") as f:
+            page = int(f.read().strip())
+            if page > 1000:  # Arbitrary limit to prevent starting from an unreasonably high page
+                logger.warning(f"Last page number {page} is too high, resetting to 0")
+                return 0
+            return page
+    except (FileNotFoundError, ValueError):
+        logger.info(f"No valid last page found, starting from page 0")
+        return 0
 
 def save_last_page(page):
-    """Save the last processed page number."""
+    """Save the last processed page number to file."""
     try:
         with open(LAST_PAGE_FILE, "w") as f:
             f.write(str(page))
-        logger.info(f"Saved last processed page: {page} to {LAST_PAGE_FILE}")
+        logger.info(f"Saved last processed page: {page}")
     except Exception as e:
-        logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
+        logger.error(f"Failed to save last processed page {page}: {str(e)}")
 
-def crawl(auth_headers, processed_ids):
+def crawl(auth_headers, processed_ids, country, specialty):
     success_count = 0
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
-    
-    for i in range(start_page, 15):  # Adjust range to continue from last page
-        url = f'https://www.linkedin.com/jobs/search?keywords=&location=Mauritius&start={i * 25}'
+    logger.info(f"Starting crawl from page: {start_page} for country: {country}, specialty: {specialty}")
+
+    keywords_param = f"keywords={specialty}&" if specialty else ''
+    for i in range(start_page, 15):  # Limit to 15 pages for now, adjust as needed
+        url = f'https://www.linkedin.com/jobs/search?{keywords_param}location={country}&start={i * 25}'
         logger.info(f'Fetching job search page: {url}')
         time.sleep(random.uniform(5, 10))
         try:
@@ -347,91 +317,101 @@ def crawl(auth_headers, processed_ids):
             response.raise_for_status()
             if "login" in response.url or "challenge" in response.url:
                 logger.error("Login or CAPTCHA detected, stopping crawl")
+                save_last_page(i)
                 break
             soup = BeautifulSoup(response.text, 'html.parser')
             job_list = soup.select("#main-content > section > ul > li > div > a")
             urls = [a['href'] for a in job_list if a.get('href')]
             logger.info(f'Found {len(urls)} job URLs on page: {url}')
             
+            if not urls:  # Stop crawling if no jobs are found on the page
+                logger.info(f"No jobs found on page {i}, stopping crawl")
+                save_last_page(i)
+                break
+                
             for index, job_url in enumerate(urls):
-                job_data = scrape_job_details(job_url)
-                if not job_data:
-                    logger.error(f"No data scraped for job: {job_url}")
-                    print(f"Job (URL: {job_url}) failed to scrape: No data returned")
-                    failure_count += 1
-                    total_jobs += 1
-                    continue
-                
-                job_dict = {
-                    "job_title": job_data[0],
-                    "company_logo": job_data[1],
-                    "company_name": job_data[2],
-                    "company_url": job_data[3],
-                    "location": job_data[4],
-                    "environment": job_data[5],
-                    "job_type": job_data[6],
-                    "level": job_data[7],
-                    "job_functions": job_data[8],
-                    "industries": job_data[9],
-                    "job_description": job_data[10],
-                    "job_url": job_data[11],
-                    "company_details": job_data[12],
-                    "company_website_url": job_data[13],
-                    "company_industry": job_data[14],
-                    "company_size": job_data[15],
-                    "company_headquarters": job_data[16],
-                    "company_type": job_data[17],
-                    "company_founded": job_data[18],
-                    "company_specialties": job_data[19],
-                    "company_address": job_data[20],
-                    "application_url": job_data[21],
-                    "description_application_info": job_data[22],
-                    "resolved_application_info": job_data[23],
-                    "final_application_email": job_data[24],
-                    "final_application_url": job_data[25],
-                    "resolved_application_url": job_data[26],
-                    "job_salary": ""  # Not scraped, placeholder
-                }
-                
-                job_title = job_dict.get("job_title", "Unknown Job")
-                company_name = job_dict.get("company_name", "")
-                
-                job_id = generate_job_id(job_title, company_name)
-                
+                job_id = hashlib.md5(job_url.encode()).hexdigest()[:16]
                 if job_id in processed_ids:
-                    logger.info(f"Skipping already processed job: {job_id} ({job_title} at {company_name})")
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) skipped - already processed.")
+                    logger.info(f"Skipping already processed job: {job_id}")
+                    print(f"Job (ID: {job_id}) skipped - already processed.")
                     total_jobs += 1
                     continue
                 
-                if not company_name or company_name.lower() == "unknown":
-                    logger.info(f"Skipping job with unknown company: {job_title} (ID: {job_id})")
-                    print(f"Job '{job_title}' (ID: {job_id}) skipped - unknown company")
+                try:
+                    job_data = scrape_job_details(job_url)
+                    if not job_data:
+                        logger.error(f"No data scraped for job: {job_url}")
+                        print(f"Job (ID: {job_id}) failed to scrape: No data returned")
+                        failure_count += 1
+                        total_jobs += 1
+                        continue
+                    
+                    job_dict = {
+                        "job_title": job_data[0],
+                        "company_logo": job_data[1],
+                        "company_name": job_data[2],
+                        "company_url": job_data[3],
+                        "location": job_data[4],
+                        "environment": job_data[5],
+                        "job_type": job_data[6],
+                        "level": job_data[7],
+                        "job_functions": job_data[8],
+                        "industries": job_data[9],
+                        "job_description": job_data[10],
+                        "job_url": job_data[11],
+                        "company_details": job_data[12],
+                        "company_website_url": job_data[13],
+                        "company_industry": job_data[14],
+                        "company_size": job_data[15],
+                        "company_headquarters": job_data[16],
+                        "company_type": job_data[17],
+                        "company_founded": job_data[18],
+                        "company_specialties": job_data[19],
+                        "company_address": job_data[20],
+                        "application_url": job_data[21],
+                        "description_application_info": job_data[22],
+                        "resolved_application_info": job_data[23],
+                        "final_application_email": job_data[24],
+                        "final_application_url": job_data[25],
+                        "resolved_application_url": job_data[26],
+                        "job_salary": ""  # Not scraped, placeholder
+                    }
+                    
+                    job_title = job_dict.get("job_title", "Unknown Job")
+                    company_name = job_dict.get("company_name", "")
+                    
+                    if not company_name or company_name.lower() == "unknown":
+                        logger.info(f"Skipping job with unknown company: {job_title} (ID: {job_id})")
+                        print(f"Job '{job_title}' (ID: {job_id}) skipped - unknown company")
+                        failure_count += 1
+                        total_jobs += 1
+                        continue
+                    
+                    total_jobs += 1
+                    
+                    company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
+                    job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
+                    
+                    if job_post_id:
+                        processed_ids.add(job_id)
+                        with open(PROCESSED_IDS_FILE, "a") as f:
+                            f.write(f"{job_id}\n")
+                        logger.info(f"Processed and saved job: {job_id} - {job_title}")
+                        print(f"Job '{job_title}' (ID: {job_id}) successfully posted to WordPress. Post ID: {job_post_id}, URL {job_post_url}")
+                        success_count += 1
+                    else:
+                        print(f"Job '{job_title}' (ID: {job_id}) failed to post to WordPress. Check logs for details.")
+                        failure_count += 1
+                except Exception as e:
+                    logger.error(f'Error scraping job: {job_url} - {str(e)}')
+                    print(f"Job (ID: {job_id}) failed to scrape: {str(e)}")
                     failure_count += 1
                     total_jobs += 1
-                    continue
-                
-                total_jobs += 1
-                
-                company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
-                job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
-                
-                if job_post_id:
-                    processed_ids.add(job_id)
-                    save_processed_id(job_id)
-                    logger.info(f"Processed and saved job: {job_id} - {job_title} at {company_name}")
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) successfully posted to WordPress. Post ID: {job_post_id}, URL {job_post_url}")
-                    success_count += 1
-                else:
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post to WordPress. Check logs for details.")
-                    failure_count += 1
-            
-            # Save the current page as the last processed page
-            save_last_page(i)
-        
+            save_last_page(i + 1)  # Save the next page to start from in case of restart
         except Exception as e:
             logger.error(f'Error fetching job search page: {url} - {str(e)}')
-            failure_count += 1
+            save_last_page(i)  # Save the current page in case of failure
+            break
     
     print("\n--- Summary ---")
     print(f"Total jobs processed: {total_jobs}")
@@ -452,7 +432,7 @@ def scrape_job_details(job_url):
         job_title = job_title.get_text().strip() if job_title else ''
         logger.info(f'Scraped Job Title: {job_title}')
 
-        company_logo = soup.select_one("#main-content > section.core-rail.mx-auto.papabear\:w-core-rail-width.mamabear\:max-w-\[790px\].babybear\:max-w-\[790px\] > div > section.top-card-layout.container-lined.overflow-hidden.babybear\:rounded-\[0px\] > div > a > img")
+        company_logo = soup.select_one("#main-content > section.core-rail.mx-auto.papabear\\:w-core-rail-width.mamabear\\:max-w-\\[790px\\].babybear\\:max-w-\\[790px\\] > div > section.top-card-layout.container-lined.overflow-hidden.babybear\\:rounded-\\[0px\\] > div > a > img")
         company_logo = (company_logo.get('data-delayed-url') or company_logo.get('src') or '') if company_logo else ''
         logger.info(f'Scraped Company Logo URL: {company_logo}')
 
@@ -604,15 +584,8 @@ def scrape_job_details(job_url):
 
             except Exception as e:
                 logger.error(f'Failed to follow application URL redirect: {str(e)}')
-                error_str = str(e)
-                external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
-                if external_url_match:
-                    external_url = external_url_match.group(1)
-                    final_application_url = f"https://{external_url}"
-                    logger.info(f'Extracted external URL from error for application: {final_application_url}')
-                else:
-                    final_application_url = description_application_url if description_application_url else application_url or ''
-                    logger.warning(f'No external URL found in error, using fallback: {final_application_url}')
+                final_application_url = description_application_url if description_application_url else application_url or ''
+                logger.warning(f'Using fallback application URL: {final_application_url}')
 
         company_details = ''
         company_website_url = ''
@@ -656,15 +629,7 @@ def scrape_job_details(job_url):
                         logger.info(f'Resolved Company Website URL: {company_website_url}')
                     except Exception as e:
                         logger.error(f'Failed to resolve company website URL: {str(e)}')
-                        error_str = str(e)
-                        external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
-                        if external_url_match:
-                            external_url = external_url_match.group(1)
-                            company_website_url = f"https://{external_url}"
-                            logger.info(f'Extracted external URL from error for company website: {company_website_url}')
-                        else:
-                            logger.warning(f'No external URL found in error for {company_name}')
-                            company_website_url = ''
+                        company_website_url = ''
                 else:
                     description_elem = company_soup.select_one("p.about-us__description")
                     if description_elem:
@@ -765,6 +730,14 @@ def scrape_job_details(job_url):
         return None
 
 def main():
+    parser = argparse.ArgumentParser(description='LinkedIn Job Scraper')
+    parser.add_argument('--country', type=str, default='Mauritius', help='Country to search jobs in')
+    parser.add_argument('--specialty', type=str, default='', help='Job specialty or keywords')
+    args = parser.parse_args()
+
+    if not WP_USERNAME or not WP_APP_PASSWORD:
+        logger.error("Missing WP_USERNAME or WP_APP_PASSWORD environment variables")
+        return
     auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
     auth = base64.b64encode(auth_string.encode()).decode()
     wp_headers = {
@@ -772,8 +745,15 @@ def main():
         "Content-Type": "application/json"
     }
     
-    processed_ids = load_processed_ids()
-    crawl(auth_headers=wp_headers, processed_ids=processed_ids)
+    processed_ids = set()
+    try:
+        with open(PROCESSED_IDS_FILE, "r") as f:
+            processed_ids = set(line.strip() for line in f if line.strip())
+        logger.info(f"Loaded {len(processed_ids)} processed job IDs")
+    except FileNotFoundError:
+        logger.info(f"No processed IDs file found, starting fresh")
+    
+    crawl(auth_headers=wp_headers, processed_ids=processed_ids, country=args.country, specialty=args.specialty)
 
 if __name__ == "__main__":
     main()
