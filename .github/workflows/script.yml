@@ -3,7 +3,16 @@ name: Run LinkedIn Scraper
 on:
   schedule:
     - cron: '0 * * * *'  # Every hour at minute 0
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:  # Manual trigger with inputs
+    inputs:
+      country:
+        description: 'Country to scrape'
+        required: true
+        default: 'Mauritius'
+      specialty:
+        description: 'Job specialty/keywords'
+        required: false
+        default: ''
 
 jobs:
   scrape:
@@ -26,9 +35,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run scraper
-        run: python script.py
+        run: python script.py --country "${{ inputs.country }}" --specialty "${{ inputs.specialty }}"
 
-      # Commit changes to persist processed files
       - name: Commit changes
         run: |
           git config --local user.email "github-actions@github.com"
