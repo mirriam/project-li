@@ -13,8 +13,15 @@ from urllib3.util.retry import Retry
 import os
 import subprocess
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging with verbose output
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('scraper.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # HTTP headers for scraping
@@ -56,6 +63,7 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
 # Get country and specialty from environment variables
 COUNTRY = os.environ.get('COUNTRY', 'Mauritius')
 SPECIALTY = os.environ.get('SPECIALTY', '')
+logger.info(f"Initialized with COUNTRY={COUNTRY}, SPECIALTY={SPECIALTY}")
 
 def sanitize_text(text, is_url=False):
     if not text:
@@ -97,6 +105,7 @@ def split_paragraphs(text, max_length=200):
 def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
     term_name = sanitize_text(term_name)
     if not term_name:
+        logger.warning(f"Empty term name for taxonomy {taxonomy}, skipping")
         return None
     check_url = f"{wp_url}?search={term_name}"
     try:
@@ -105,6 +114,7 @@ def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
         terms = response.json()
         for term in terms:
             if term['name'].lower() == term_name.lower():
+                logger.info(f"Found existing {taxonomy} term: {term_name}, ID: {term['id']}")
                 return term['id']
         post_data = {"name": term_name, "slug": term_name.lower().replace(' ', '-')}
         response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=10, verify=False)
@@ -126,6 +136,7 @@ def save_company_to_wordpress(index, company_data, wp_headers):
     company_type = company_data.get("company_type", "")
     company_address = company_data.get("company_address", "")
     
+    logger.debug(f"Checking for existing company: {company_name}")
     check_url = f"{WP_COMPANY_URL}?search={company_name}"
     try:
         response = requests.get(check_url, headers=wp_headers, timeout=10, verify=False)
@@ -198,6 +209,7 @@ def save_article_to_wordpress(index, job_data, company_id, wp_headers, live_jobs
     company_founded = job_data.get("company_founded", "")
     
     job_id = hashlib.md5(job_url.encode()).hexdigest()[:16]
+    logger.debug(f"Checking for existing job: {job_title} (ID: {job_id})")
     check_url = f"{WP_URL}?search={sanitize_text(job_title)}"
     try:
         response = requests.get(check_url, headers=wp_headers, timeout=10, verify=False)
@@ -275,6 +287,7 @@ def save_article_to_wordpress(index, job_data, company_id, wp_headers, live_jobs
         "specialty": SPECIALTY,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     })
+    logger.debug(f"Added job to live_jobs: {job_title}, Total live jobs: {len(live_jobs)}")
     
     try:
         response = requests.post(WP_URL, json=post_data, headers=wp_headers, timeout=15, verify=False)
@@ -308,20 +321,27 @@ def save_last_page(page):
 
 def save_live_jobs(live_jobs):
     try:
+        # Ensure file exists even if no jobs are scraped
+        live_jobs_data = live_jobs if live_jobs else []
         with open(LIVE_JOBS_FILE, "w") as f:
-            json.dump(live_jobs, f, indent=2)
-        logger.info(f"Saved {len(live_jobs)} live jobs to {LIVE_JOBS_FILE}")
+            json.dump(live_jobs_data, f, indent=2)
+        logger.info(f"Saved {len(live_jobs_data)} live jobs to {LIVE_JOBS_FILE}")
     except Exception as e:
         logger.error(f"Failed to save live jobs to {LIVE_JOBS_FILE}: {str(e)}")
 
 def commit_files():
     try:
+        # Check if files have changes
         subprocess.run(["git", "add", PROCESSED_IDS_FILE, LAST_PAGE_FILE, LIVE_JOBS_FILE], check=True)
-        subprocess.run(["git", "commit", "-m", "Update processed files and live jobs after scrape"], check=True)
-        subprocess.run(["git", "push"], check=True)
-        logger.info("Successfully committed and pushed files to GitHub")
+        status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True)
+        if status.stdout:
+            subprocess.run(["git", "commit", "-m", "Update processed files and live jobs after scrape"], check=True)
+            subprocess.run(["git", "push"], check=True)
+            logger.info("Successfully committed and pushed files to GitHub")
+        else:
+            logger.info("No changes to commit")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to commit/push files: {str(e)}")
+        logger.error(f"Failed to commit/push files: {str(e)}, Output: {e.output}")
 
 def crawl(auth_headers, processed_ids):
     success_count = 0
@@ -329,10 +349,11 @@ def crawl(auth_headers, processed_ids):
     total_jobs = 0
     live_jobs = []
     start_page = load_last_page()
-    logger.info(f"Starting crawl from page: {start_page} for country: {COUNTRY}, specialty: {SPECIALTY}")
+    search_url_base = f'https://www.linkedin.com/jobs/search?keywords={quote(SPECIALTY)}&location={quote(COUNTRY)}'
+    logger.info(f"Starting crawl from page {start_page} for country: {COUNTRY}, specialty: {SPECIALTY}, base URL: {search_url_base}")
 
     for i in range(start_page, 15):
-        search_url = f'https://www.linkedin.com/jobs/search?keywords={quote(SPECIALTY)}&location={quote(COUNTRY)}&start={i * 25}'
+        search_url = f'{search_url_base}&start={i * 25}'
         logger.info(f'Fetching job search page: {search_url}')
         time.sleep(random.uniform(5, 10))
         try:
@@ -344,6 +365,8 @@ def crawl(auth_headers, processed_ids):
             if "login" in response.url or "challenge" in response.url:
                 logger.error("Login or CAPTCHA detected, stopping crawl")
                 save_last_page(i)
+                save_live_jobs(live_jobs)
+                commit_files()
                 break
             soup = BeautifulSoup(response.text, 'html.parser')
             job_list = soup.select("#main-content > section > ul > li > div > a")
@@ -353,6 +376,8 @@ def crawl(auth_headers, processed_ids):
             if not urls:
                 logger.info(f"No jobs found on page {i}, stopping crawl")
                 save_last_page(i)
+                save_live_jobs(live_jobs)
+                commit_files()
                 break
                 
             for index, job_url in enumerate(urls):
@@ -437,6 +462,8 @@ def crawl(auth_headers, processed_ids):
         except Exception as e:
             logger.error(f'Error fetching job search page: {search_url} - {str(e)}')
             save_last_page(i)
+            save_live_jobs(live_jobs)
+            commit_files()
             break
     
     save_live_jobs(live_jobs)
@@ -776,6 +803,10 @@ def main():
         logger.info(f"Loaded {len(processed_ids)} processed job IDs")
     except FileNotFoundError:
         logger.info(f"No processed IDs file found, starting fresh")
+    
+    # Ensure scraped_jobs.json exists at start
+    save_live_jobs([])
+    commit_files()
     
     crawl(auth_headers=wp_headers, processed_ids=processed_ids)
 
