@@ -529,7 +529,7 @@ def scrape_job_details(job_url):
         industries = industries.get_text().strip() if industries else ''
         logger.info(f'Scraped Industries: {industries}')
 
-        job_description = ''
+                job_description = ''
         description_container = soup.select_one(".show-more-less-html__markup")
         if description_container:
             paragraphs = description_container.find_all(['p', 'li'], recursive=False)
@@ -568,7 +568,7 @@ def scrape_job_details(job_url):
             logger.info(f'Raw Job Description (length): {len(job_description)}')
             job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
             job_description = split_paragraphs(job_description, max_length=200)
-            logger.info(f"Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.splitlines())}")
+            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split("\n\n"))}')
         else:
             logger.warning(f"No job description container found for {job_title}")
 
