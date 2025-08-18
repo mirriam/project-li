@@ -568,7 +568,7 @@ def scrape_job_details(job_url):
             logger.info(f'Raw Job Description (length): {len(job_description)}')
             job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
             job_description = split_paragraphs(job_description, max_length=200)
-             logger.info(f'Raw Job Description (length): {len(job_description)}')
+            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split("\n\n"))}')
         else:
             logger.warning(f"No job description container found for {job_title}")
 
@@ -636,8 +636,7 @@ def scrape_job_details(job_url):
                 error_str = str(e)
                 external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
                 if external_url_match:
-                    external_url = external_url_match.group(1)
-                    final_application_url = f"https://{external_url}"
+                    final_application_url = f"https://{external_url_match.group(1)}"
                     logger.info(f'Extracted external URL from error for application: {final_application_url}')
                 else:
                     final_application_url = description_application_url if description_application_url else application_url or ''
@@ -688,8 +687,7 @@ def scrape_job_details(job_url):
                         error_str = str(e)
                         external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
                         if external_url_match:
-                            external_url = external_url_match.group(1)
-                            company_website_url = f"https://{external_url}"
+                            company_website_url = f"https://{external_url_match.group(1)}"
                             logger.info(f'Extracted external URL from error for company website: {company_website_url}')
                         else:
                             logger.warning(f'No external URL found in error for {company_name}')
