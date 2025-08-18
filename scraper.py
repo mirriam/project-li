@@ -481,7 +481,7 @@ def scrape_job_details(job_url):
         job_title = job_title.get_text().strip() if job_title else ''
         logger.info(f'Scraped Job Title: {job_title}')
 
-        company_logo = soup.select_one("#main-content > section.core-rail.mx-auto.papabear\:w-core-rail-width.mamabear\:max-w-\[790px\].babybear\:max-w-\[790px\] > div > section.top-card-layout.container-lined.overflow-hidden.babybear\:rounded-\[0px\] > div > a > img")
+        company_logo = soup.select_one("#main-content > section.core-rail.mx-auto.papabear\\:w-core-rail-width.mamabear\\:max-w-\\[_790px_\\].babybear\\:max-w-\\[_790px_\\] > div > section.top-card-layout.container-lined.overflow-hidden.babybear\\:rounded-\\[_0px_\\] > div > a > img")
         company_logo = (company_logo.get('data-delayed-url') or company_logo.get('src') or '') if company_logo else ''
         logger.info(f'Scraped Company Logo URL: {company_logo}')
 
@@ -568,7 +568,7 @@ def scrape_job_details(job_url):
             logger.info(f'Raw Job Description (length): {len(job_description)}')
             job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
             job_description = split_paragraphs(job_description, max_length=200)
-            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split('\n\n'))}')
+            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split("\n\n"))}')
         else:
             logger.warning(f"No job description container found for {job_title}")
 
