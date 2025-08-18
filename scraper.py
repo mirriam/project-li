@@ -62,7 +62,7 @@ def sanitize_text(text, is_url=False):
         return text
     text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'(\w)\.(\w)', r'\1. \2', text)
-    text = re.sub(r'(\w)(\w)', r'\1 \2', text) if re.match(r'^\w+$', text) else text
+    text = re.sub(r'(\w)(\w)', r'\1 \2', text) if re.match r'^\w+$', text) else text
     return ' '.join(text.split())
 
 def normalize_for_deduplication(text):
@@ -71,10 +71,10 @@ def normalize_for_deduplication(text):
     text = re.sub(r'\s+', '', text)      # Remove all whitespace
     return text.lower()
 
-def generate_job_id(job_title, company_name):
+def(generate_job_id(job_title, company_name):
     """Generate a unique job ID based on job title and company name."""
     combined = f"{job_title}_{company_name}"
-    return hashlib.md5(combined.encode()).hexdigest()[:16]
+    return hashlib.md5(combined.encode()).hexdigest()[:10]
 
 def split_paragraphs(text, max_length=200):
     """Split large paragraphs into smaller ones, each up to max_length characters."""
@@ -330,18 +330,18 @@ def save_last_page(page):
     except Exception as e:
         logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
 
-def save_to_json(job_dict, job_id):
-    """Save job details to scraped_jobs.json."""
+def save_to_json(job_data, job_id):
+    """Save job data to scraped_jobs.json."""
     try:
         scraped_jobs = []
         if os.path.exists(SCRAPED_JOBS_FILE):
-            with open(SCRAPED_JOBS_FILE, 'r') as f:
+            with open(SCRAPED_JOBS_FILE, "r") as f:
                 scraped_jobs = json.load(f)
         
-        job_dict['job_id'] = job_id
-        scraped_jobs.append(job_dict)
+        job_data["job_id"] = job_id
+        scraped_jobs.append(job_data)
         
-        with open(SCRAPED_JOBS_FILE, 'w') as f:
+        with open(SCRAPED_JOBS_FILE, "w") as f:
             json.dump(scraped_jobs, f, indent=2)
         logger.info(f"Saved job data to {SCRAPED_JOBS_FILE} for job ID: {job_id}")
     except Exception as e:
