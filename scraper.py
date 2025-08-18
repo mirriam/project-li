@@ -599,7 +599,7 @@ def scrape_job_details(job_url):
         final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
         final_application_url = description_application_url if description_application_url else ''
 
-        if application_url:
+                if application_url:
             try:
                 time.sleep(5)
                 resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
