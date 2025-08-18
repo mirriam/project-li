@@ -289,33 +289,6 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
         logger.error(f"Failed to post job {job_title}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}")
         return None, None
 
-def save_live_jobs(live_jobs):
-    """Save the list of live jobs to scraped_jobs.json."""
-    try:
-        live_jobs_data = live_jobs if live_jobs else []
-        with open(LIVE_JOBS_FILE, 'w') as f:
-            json.dump(live_jobs_data, f, indent=2)
-        logger.info(f"Saved {len(live_jobs_data)} live jobs to {LIVE_JOBS_FILE}")
-    except Exception as e:
-        logger.error(f"Failed to save live jobs to {LIVE_JOBS_FILE}: {str(e)}")
-
-def commit_files():
-    """Commit changes to processed IDs, last page, and live jobs files."""
-    try:
-        subprocess.run(['git', 'config', '--local', 'user.email', 'github-actions@github.com'], check=True)
-        subprocess.run(['git', 'config', '--local', 'user.name', 'GitHub Actions'], check=True)
-        subprocess.run(['git', 'add', PROCESSED_IDS_FILE, LAST_PAGE_FILE, LIVE_JOBS_FILE], check=True)
-        status = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True).stdout
-        logger.info(f"Git status: {status}")
-        if status.strip():
-            subprocess.run(['git', 'commit', '-m', 'Update scraped_jobs.json and processed files after scrape'], check=True)
-            subprocess.run(['git', 'push'], check=True)
-            logger.info("Successfully committed and pushed files to GitHub")
-        else:
-            logger.info("No changes to commit")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to commit files: {str(e)}")
-
 def load_processed_ids():
     """Load processed job IDs from file."""
     processed_ids = set()
@@ -336,6 +309,15 @@ def save_processed_id(job_id):
         logger.info(f"Saved job ID {job_id} to {PROCESSED_IDS_FILE}")
     except Exception as e:
         logger.error(f"Failed to save job ID {job_id} to {PROCESSED_IDS_FILE}: {str(e)}")
+
+def save_live_jobs(live_jobs):
+    """Save live jobs to scraped_jobs.json."""
+    try:
+        with open(LIVE_JOBS_FILE, 'w') as f:
+            json.dump(live_jobs, f, indent=2)
+        logger.info(f"Saved {len(live_jobs)} live jobs to {LIVE_JOBS_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to save live jobs to {LIVE_JOBS_FILE}: {str(e)}")
 
 def load_last_page():
     """Load the last processed page number."""
@@ -443,6 +425,30 @@ def crawl(auth_headers, processed_ids):
                 
                 total_jobs += 1
                 
+                # Save to scraped_jobs.json immediately after scraping
+                live_jobs.append({
+                    "job_id": job_id,
+                    "title": job_title,
+                    "company": company_name,
+                    "location": job_dict.get("location", "Mauritius"),
+                    "job_type": job_dict.get("job_type", ""),
+                    "environment": job_dict.get("environment", ""),
+                    "job_description": job_dict.get("job_description", ""),
+                    "job_url": job_dict.get("job_url", ""),
+                    "company_details": job_dict.get("company_details", ""),
+                    "company_website_url": job_dict.get("company_website_url", ""),
+                    "company_industry": job_dict.get("company_industry", ""),
+                    "company_size": job_dict.get("company_size", ""),
+                    "company_headquarters": job_dict.get("company_headquarters", ""),
+                    "company_type": job_dict.get("company_type", ""),
+                    "company_founded": job_dict.get("company_founded", ""),
+                    "company_specialties": job_dict.get("company_specialties", ""),
+                    "company_address": job_dict.get("company_address", ""),
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                })
+                save_live_jobs(live_jobs)
+                logger.info(f"Saved job {job_title} (ID: {job_id}) to {LIVE_JOBS_FILE}")
+                
                 company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
                 job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
                 
@@ -452,17 +458,25 @@ def crawl(auth_headers, processed_ids):
                     logger.info(f"Processed and saved job: {job_id} - {job_title} at {company_name}")
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) successfully posted to WordPress. Post ID: {job_post_id}, URL {job_post_url}")
                     success_count += 1
-                    # Add to live_jobs for scraped_jobs.json
-                    live_jobs.append({
-                        'title': job_title,
-                        'company': company_name,
-                        'country': 'Mauritius',
-                        'specialty': job_dict.get('job_functions', ''),
-                        'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
-                    })
                 else:
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post to WordPress. Check logs for details.")
                     failure_count += 1
+                
+                # Commit to GitHub after each job
+                try:
+                    subprocess.run(['git', 'config', '--local', 'user.email', 'github-actions@github.com'], check=True)
+                    subprocess.run(['git', 'config', '--local', 'user.name', 'GitHub Actions'], check=True)
+                    subprocess.run(['git', 'add', LIVE_JOBS_FILE], check=True)
+                    status = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True).stdout
+                    logger.info(f"Git status after job {job_id}: {status}")
+                    if status.strip():
+                        subprocess.run(['git', 'commit', '-m', f'Add job {job_id} to scraped_jobs.json'], check=True)
+                        subprocess.run(['git', 'push'], check=True)
+                        logger.info(f"Committed and pushed job {job_id} to GitHub")
+                    else:
+                        logger.info(f"No changes to commit for job {job_id}")
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"Failed to commit job {job_id}: {str(e)}")
             
             # Save the current page as the last processed page
             save_last_page(i)
@@ -471,16 +485,26 @@ def crawl(auth_headers, processed_ids):
             logger.error(f'Error fetching job search page: {url} - {str(e)}')
             failure_count += 1
     
-    # Save live_jobs to scraped_jobs.json
-    save_live_jobs(live_jobs)
-    if live_jobs:
-        commit_files()
-    
     print("\n--- Summary ---")
     print(f"Total jobs processed: {total_jobs}")
     print(f"Successfully posted: {success_count}")
     print(f"Failed to post or scrape: {failure_count}")
-    print(f"Saved {len(live_jobs)} jobs to {LIVE_JOBS_FILE}")
+    save_live_jobs(live_jobs)  # Final save
+    if live_jobs:
+        try:
+            subprocess.run(['git', 'config', '--local', 'user.email', 'github-actions@github.com'], check=True)
+            subprocess.run(['git', 'config', '--local', 'user.name', 'GitHub Actions'], check=True)
+            subprocess.run(['git', 'add', LIVE_JOBS_FILE], check=True)
+            status = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True).stdout
+            logger.info(f"Final git status: {status}")
+            if status.strip():
+                subprocess.run(['git', 'commit', '-m', 'Final update to scraped_jobs.json'], check=True)
+                subprocess.run(['git', 'push'], check=True)
+                logger.info("Final commit and push to GitHub")
+            else:
+                logger.info("No final changes to commit")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to commit final changes: {str(e)}")
 
 def scrape_job_details(job_url):
     logger.info(f'Fetching job details from: {job_url}')
@@ -519,7 +543,7 @@ def scrape_job_details(job_url):
         logger.info(f'Deduplicated location for {job_title}: {location}')
 
         environment = ''
-        env_element = soup.select_one(".topcard__flavor--metadata")
+        env_element = soup.select(".topcard__flavor--metadata")
         for elem in env_element:
             text = elem.get_text().strip().lower()
             if 'remote' in text or 'hybrid' in text or 'on-site' in text:
@@ -583,7 +607,7 @@ def scrape_job_details(job_url):
             logger.info(f'Raw Job Description (length): {len(job_description)}')
             job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
             job_description = split_paragraphs(job_description, max_length=200)
-            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.splitlines())}')
+            logger.info(f"Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split('\n\n'))}")
         else:
             logger.warning(f"No job description container found for {job_title}")
 
