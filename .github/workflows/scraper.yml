@@ -1,48 +1,30 @@
-name: Run LinkedIn Scraper
-on:
-  schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
-    inputs:
-      country:
-        description: 'Country to scrape jobs for'
-        required: true
-        default: 'Mauritius'
-      specialty:
-        description: 'Job specialty or keywords'
-        required: false
-        default: ''
-jobs:
-  scrape:
-    runs-on: ubuntu-latest
-    env:
-      WP_USERNAME: ${{ secrets.WP_USERNAME }}
-      WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-      COUNTRY: ${{ github.event.inputs.country || 'Mauritius' }}
-      SPECIALTY: ${{ github.event.inputs.specialty || '' }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Log inputs
-        run: |
-          echo "Running scraper with COUNTRY=$COUNTRY, SPECIALTY=$SPECIALTY"
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Run scraper
-        run: python scraper.py
-      - name: Commit changes
-        run: |
-          git config --local user.email "github-actions@github.com"
-          git config --local user.name "GitHub Actions"
-          git add mauritius_processed_job_ids.csv last_processed_page.txt scraped_jobs.json || true
-          git status
-          git commit -m "Update processed files and live jobs after scrape" || echo "No changes to commit"
-          git push || echo "No changes to push"
+# Configuration for the job scraper
+scraper:
+  wordpress:
+    url: "https://mauritius.mimusjobs.com/wp-json/wp/v2/"
+    endpoints:
+      job_listings: "job-listings"
+      company: "company"
+      media: "media"
+      job_type: "job_listing_type"
+      job_region: "job_listing_region"
+    username: "mary"
+    app_password: "Piab Mwog pfiq pdfK BOGH hDEy"
+  files:
+    processed_ids: "mauritius_processed_job_ids.csv"
+    last_page: "last_processed_page.txt"
+    scraped_jobs: "scraped_jobs.json"
+  scraping:
+    base_url: "https://www.linkedin.com/jobs/search"
+    location: "Mauritius"
+    headers:
+      user-agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36"
+    max_pages: 15
+    delay:
+      min: 5
+      max: 10
+    retries:
+      total: 3
+      backoff_factor: 1
+      status_forcelist: [429, 500, 502, 503, 504]
+    timeout: 15
