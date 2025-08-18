@@ -381,7 +381,7 @@ def crawl(auth_headers, processed_ids):
     start_page = load_last_page()
     
     for i in range(start_page, 15):  # Adjust range to continue from last page
-        url = f'https://www.linkedin.com/jobs/search?keywords=&location=Mauritius&start={i * 1}'
+        url = f'https://www.linkedin.com/jobs/search?keywords=&location=Mauritius&start={i * 25}'
         logger.info(f'Fetching job search page: {url}')
         time.sleep(random.uniform(5, 10))
         try:
@@ -468,13 +468,15 @@ def crawl(auth_headers, processed_ids):
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) successfully posted to WordPress. Post ID: {job_post_id}, URL {job_post_url}")
                     success_count += 1
                     # Add to live_jobs and save immediately to scraped_jobs.json
-                    live_jobs.append({
+                    job_entry = {
                         'title': job_title,
                         'company': company_name,
                         'country': 'Mauritius',
                         'specialty': job_dict.get('job_functions', ''),
                         'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
-                    })
+                    }
+                    logger.debug(f"Adding job to live_jobs: {job_entry}")
+                    live_jobs.append(job_entry)
                     save_live_jobs(live_jobs)
                 else:
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post to WordPress. Check logs for details.")
