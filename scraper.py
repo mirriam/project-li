@@ -5,13 +5,12 @@ import time
 import re
 from urllib.parse import urljoin, urlparse, parse_qs, unquote
 import base64
-import json
+import json  # Added for JSON handling
 import hashlib
 import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
-import subprocess
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,7 +31,6 @@ WP_USERNAME = "mary"
 WP_APP_PASSWORD = "Piab Mwog pfiq pdfK BOGH hDEy"
 PROCESSED_IDS_FILE = "mauritius_processed_job_ids.csv"
 LAST_PAGE_FILE = "last_processed_page.txt"
-LIVE_JOBS_FILE = "scraped_jobs.json"
 JOB_TYPE_MAPPING = {
     "Full-time": "full-time",
     "Part-time": "part-time",
@@ -310,15 +308,6 @@ def save_processed_id(job_id):
     except Exception as e:
         logger.error(f"Failed to save job ID {job_id} to {PROCESSED_IDS_FILE}: {str(e)}")
 
-def save_live_jobs(live_jobs):
-    """Save live jobs to scraped_jobs.json."""
-    try:
-        with open(LIVE_JOBS_FILE, 'w') as f:
-            json.dump(live_jobs, f, indent=2)
-        logger.info(f"Saved {len(live_jobs)} live jobs to {LIVE_JOBS_FILE}")
-    except Exception as e:
-        logger.error(f"Failed to save live jobs to {LIVE_JOBS_FILE}: {str(e)}")
-
 def load_last_page():
     """Load the last processed page number."""
     try:
@@ -340,8 +329,41 @@ def save_last_page(page):
     except Exception as e:
         logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
 
+def save_to_json(job_dict, company_id, job_post_id, job_post_url, company_url):
+    """Save job and company data to scraped_jobs.json."""
+    try:
+        data = {
+            "job_id": generate_job_id(job_dict.get("job_title", ""), job_dict.get("company_name", "")),
+            "job_data": job_dict,
+            "company_id": company_id,
+            "job_post_id": job_post_id,
+            "job_post_url": job_post_url,
+            "company_url": company_url,
+            "scraped_at": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        # Load existing data if file exists
+        json_data = []
+        if os.path.exists("scraped_jobs.json"):
+            with open("scraped_jobs.json", "r") as f:
+                try:
+                    json_data = json.load(f)
+                    if not isinstance(json_data, list):
+                        json_data = [json_data]
+                except json.JSONDecodeError:
+                    json_data = []
+        
+        # Append new data
+        json_data.append(data)
+        
+        # Write back to file
+        with open("scraped_jobs.json", "w") as f:
+            json.dump(json_data, f, indent=2)
+        logger.info(f"Saved job data to scraped_jobs.json: {job_dict.get('job_title', '')} at {job_dict.get('company_name', '')}")
+    except Exception as e:
+        logger.error(f"Failed to save to scraped_jobs.json: {str(e)}")
+
 def crawl(auth_headers, processed_ids):
-    live_jobs = []
     success_count = 0
     failure_count = 0
     total_jobs = 0
@@ -425,32 +447,11 @@ def crawl(auth_headers, processed_ids):
                 
                 total_jobs += 1
                 
-                # Save to scraped_jobs.json immediately after scraping
-                live_jobs.append({
-                    "job_id": job_id,
-                    "title": job_title,
-                    "company": company_name,
-                    "location": job_dict.get("location", "Mauritius"),
-                    "job_type": job_dict.get("job_type", ""),
-                    "environment": job_dict.get("environment", ""),
-                    "job_description": job_dict.get("job_description", ""),
-                    "job_url": job_dict.get("job_url", ""),
-                    "company_details": job_dict.get("company_details", ""),
-                    "company_website_url": job_dict.get("company_website_url", ""),
-                    "company_industry": job_dict.get("company_industry", ""),
-                    "company_size": job_dict.get("company_size", ""),
-                    "company_headquarters": job_dict.get("company_headquarters", ""),
-                    "company_type": job_dict.get("company_type", ""),
-                    "company_founded": job_dict.get("company_founded", ""),
-                    "company_specialties": job_dict.get("company_specialties", ""),
-                    "company_address": job_dict.get("company_address", ""),
-                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-                })
-                save_live_jobs(live_jobs)
-                logger.info(f"Saved job {job_title} (ID: {job_id}) to {LIVE_JOBS_FILE}")
-                
                 company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
                 job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
+                
+                # Save to JSON immediately after processing company and job
+                save_to_json(job_dict, company_id, job_post_id, job_post_url, company_url)
                 
                 if job_post_id:
                     processed_ids.add(job_id)
@@ -461,22 +462,6 @@ def crawl(auth_headers, processed_ids):
                 else:
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post to WordPress. Check logs for details.")
                     failure_count += 1
-                
-                # Commit to GitHub after each job
-                try:
-                    subprocess.run(['git', 'config', '--local', 'user.email', 'github-actions@github.com'], check=True)
-                    subprocess.run(['git', 'config', '--local', 'user.name', 'GitHub Actions'], check=True)
-                    subprocess.run(['git', 'add', LIVE_JOBS_FILE], check=True)
-                    status = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True).stdout
-                    logger.info(f"Git status after job {job_id}: {status}")
-                    if status.strip():
-                        subprocess.run(['git', 'commit', '-m', f'Add job {job_id} to scraped_jobs.json'], check=True)
-                        subprocess.run(['git', 'push'], check=True)
-                        logger.info(f"Committed and pushed job {job_id} to GitHub")
-                    else:
-                        logger.info(f"No changes to commit for job {job_id}")
-                except subprocess.CalledProcessError as e:
-                    logger.error(f"Failed to commit job {job_id}: {str(e)}")
             
             # Save the current page as the last processed page
             save_last_page(i)
@@ -489,22 +474,6 @@ def crawl(auth_headers, processed_ids):
     print(f"Total jobs processed: {total_jobs}")
     print(f"Successfully posted: {success_count}")
     print(f"Failed to post or scrape: {failure_count}")
-    save_live_jobs(live_jobs)  # Final save
-    if live_jobs:
-        try:
-            subprocess.run(['git', 'config', '--local', 'user.email', 'github-actions@github.com'], check=True)
-            subprocess.run(['git', 'config', '--local', 'user.name', 'GitHub Actions'], check=True)
-            subprocess.run(['git', 'add', LIVE_JOBS_FILE], check=True)
-            status = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True).stdout
-            logger.info(f"Final git status: {status}")
-            if status.strip():
-                subprocess.run(['git', 'commit', '-m', 'Final update to scraped_jobs.json'], check=True)
-                subprocess.run(['git', 'push'], check=True)
-                logger.info("Final commit and push to GitHub")
-            else:
-                logger.info("No final changes to commit")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to commit final changes: {str(e)}")
 
 def scrape_job_details(job_url):
     logger.info(f'Fetching job details from: {job_url}')
@@ -607,7 +576,7 @@ def scrape_job_details(job_url):
             logger.info(f'Raw Job Description (length): {len(job_description)}')
             job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
             job_description = split_paragraphs(job_description, max_length=200)
-            logger.info(f"Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split('\n\n'))}")
+            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split('\n\n'))}')
         else:
             logger.warning(f"No job description container found for {job_title}")
 
