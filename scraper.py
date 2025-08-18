@@ -289,6 +289,21 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
         logger.error(f"Failed to post job {job_title}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}")
         return None, None
 
+def load_live_jobs():
+    """Load existing live jobs from scraped_jobs.json."""
+    try:
+        if os.path.exists(LIVE_JOBS_FILE):
+            with open(LIVE_JOBS_FILE, 'r') as f:
+                live_jobs = json.load(f)
+                logger.info(f"Loaded {len(live_jobs)} existing jobs from {LIVE_JOBS_FILE}")
+                return live_jobs
+        else:
+            logger.info(f"No existing {LIVE_JOBS_FILE} found, starting with empty list")
+            return []
+    except Exception as e:
+        logger.error(f"Failed to load live jobs from {LIVE_JOBS_FILE}: {str(e)}")
+        return []
+
 def save_live_jobs(live_jobs):
     """Save the list of live jobs to scraped_jobs.json."""
     try:
@@ -359,7 +374,7 @@ def save_last_page(page):
         logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
 
 def crawl(auth_headers, processed_ids):
-    live_jobs = []
+    live_jobs = load_live_jobs()
     success_count = 0
     failure_count = 0
     total_jobs = 0
@@ -452,7 +467,7 @@ def crawl(auth_headers, processed_ids):
                     logger.info(f"Processed and saved job: {job_id} - {job_title} at {company_name}")
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) successfully posted to WordPress. Post ID: {job_post_id}, URL {job_post_url}")
                     success_count += 1
-                    # Add to live_jobs for scraped_jobs.json
+                    # Add to live_jobs and save immediately to scraped_jobs.json
                     live_jobs.append({
                         'title': job_title,
                         'company': company_name,
@@ -460,6 +475,7 @@ def crawl(auth_headers, processed_ids):
                         'specialty': job_dict.get('job_functions', ''),
                         'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
                     })
+                    save_live_jobs(live_jobs)
                 else:
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post to WordPress. Check logs for details.")
                     failure_count += 1
@@ -471,7 +487,7 @@ def crawl(auth_headers, processed_ids):
             logger.error(f'Error fetching job search page: {url} - {str(e)}')
             failure_count += 1
     
-    # Save live_jobs to scraped_jobs.json
+    # Save live_jobs to scraped_jobs.json (redundancy)
     save_live_jobs(live_jobs)
     if live_jobs:
         commit_files()
