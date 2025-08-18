@@ -381,7 +381,7 @@ def crawl(auth_headers, processed_ids):
     start_page = load_last_page()
     
     for i in range(start_page, 15):  # Adjust range to continue from last page
-        url = f'https://www.linkedin.com/jobs/search?keywords=&location=Mauritius&start={i * 25}'
+        url = f'https://www.linkedin.com/jobs/search?keywords=&location=Mauritius&start={i * 1}'
         logger.info(f'Fetching job search page: {url}')
         time.sleep(random.uniform(5, 10))
         try:
