@@ -330,22 +330,20 @@ def save_last_page(page):
     except Exception as e:
         logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
 
-def save_to_json(job_data):
-    """Save job data to scraped_jobs.json."""
+def save_to_json(job_dict, job_id):
+    """Save job details to scraped_jobs.json."""
     try:
-        # Load existing data if file exists
-        existing_data = []
+        scraped_jobs = []
         if os.path.exists(SCRAPED_JOBS_FILE):
             with open(SCRAPED_JOBS_FILE, 'r') as f:
-                existing_data = json.load(f)
+                scraped_jobs = json.load(f)
         
-        # Append new job data
-        existing_data.append(job_data)
+        job_dict['job_id'] = job_id
+        scraped_jobs.append(job_dict)
         
-        # Write updated data to file
         with open(SCRAPED_JOBS_FILE, 'w') as f:
-            json.dump(existing_data, f, indent=2)
-        logger.info(f"Saved job data to {SCRAPED_JOBS_FILE}")
+            json.dump(scraped_jobs, f, indent=2)
+        logger.info(f"Saved job data to {SCRAPED_JOBS_FILE} for job ID: {job_id}")
     except Exception as e:
         logger.error(f"Failed to save job data to {SCRAPED_JOBS_FILE}: {str(e)}")
 
@@ -383,7 +381,6 @@ def crawl(auth_headers, processed_ids):
                     continue
                 
                 job_dict = {
-                    "job_id": generate_job_id(job_data[0], job_data[2]),
                     "job_title": job_data[0],
                     "company_logo": job_data[1],
                     "company_name": job_data[2],
@@ -417,7 +414,7 @@ def crawl(auth_headers, processed_ids):
                 job_title = job_dict.get("job_title", "Unknown Job")
                 company_name = job_dict.get("company_name", "")
                 
-                job_id = job_dict["job_id"]
+                job_id = generate_job_id(job_title, company_name)
                 
                 if job_id in processed_ids:
                     logger.info(f"Skipping already processed job: {job_id} ({job_title} at {company_name})")
@@ -434,16 +431,11 @@ def crawl(auth_headers, processed_ids):
                 
                 total_jobs += 1
                 
+                # Save job data to JSON file
+                save_to_json(job_dict, job_id)
+                
                 company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
                 job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
-                
-                # Save job data to JSON after scraping company and job details
-                if company_id or job_post_id:
-                    job_dict["company_post_id"] = company_id
-                    job_dict["job_post_id"] = job_post_id
-                    job_dict["company_post_url"] = company_url
-                    job_dict["job_post_url"] = job_post_url
-                    save_to_json(job_dict)
                 
                 if job_post_id:
                     processed_ids.add(job_id)
@@ -481,7 +473,7 @@ def scrape_job_details(job_url):
         job_title = job_title.get_text().strip() if job_title else ''
         logger.info(f'Scraped Job Title: {job_title}')
 
-        company_logo = soup.select_one("#main-content > section.core-rail.mx-auto.papabear\\:w-core-rail-width.mamabear\\:max-w-\\[_790px_\\].babybear\\:max-w-\\[_790px_\\] > div > section.top-card-layout.container-lined.overflow-hidden.babybear\\:rounded-\\[_0px_\\] > div > a > img")
+        company_logo = soup.select_one("#main-content > section.core-rail.mx-auto.papabear\:w-core-rail-width.mamabear\:max-w-\[790px\].babybear\:max-w-\[790px\] > div > section.top-card-layout.container-lined.overflow-hidden.babybear\:rounded-\[0px\] > div > a > img")
         company_logo = (company_logo.get('data-delayed-url') or company_logo.get('src') or '') if company_logo else ''
         logger.info(f'Scraped Company Logo URL: {company_logo}')
 
@@ -529,7 +521,7 @@ def scrape_job_details(job_url):
         industries = industries.get_text().strip() if industries else ''
         logger.info(f'Scraped Industries: {industries}')
 
-                job_description = ''
+        job_description = ''
         description_container = soup.select_one(".show-more-less-html__markup")
         if description_container:
             paragraphs = description_container.find_all(['p', 'li'], recursive=False)
@@ -568,7 +560,7 @@ def scrape_job_details(job_url):
             logger.info(f'Raw Job Description (length): {len(job_description)}')
             job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
             job_description = split_paragraphs(job_description, max_length=200)
-            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split("\n\n"))}')
+            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split('\n\n'))}')
         else:
             logger.warning(f"No job description container found for {job_title}")
 
@@ -599,7 +591,7 @@ def scrape_job_details(job_url):
         final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
         final_application_url = description_application_url if description_application_url else ''
 
-                if application_url:
+        if application_url:
             try:
                 time.sleep(5)
                 resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
@@ -636,7 +628,8 @@ def scrape_job_details(job_url):
                 error_str = str(e)
                 external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
                 if external_url_match:
-                    final_application_url = f"https://{external_url_match.group(1)}"
+                    external_url = external_url_match.group(1)
+                    final_application_url = f"https://{external_url}"
                     logger.info(f'Extracted external URL from error for application: {final_application_url}')
                 else:
                     final_application_url = description_application_url if description_application_url else application_url or ''
@@ -687,7 +680,8 @@ def scrape_job_details(job_url):
                         error_str = str(e)
                         external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
                         if external_url_match:
-                            company_website_url = f"https://{external_url_match.group(1)}"
+                            external_url = external_url_match.group(1)
+                            company_website_url = f"https://{external_url}"
                             logger.info(f'Extracted external URL from error for company website: {company_website_url}')
                         else:
                             logger.warning(f'No external URL found in error for {company_name}')
@@ -786,6 +780,10 @@ def scrape_job_details(job_url):
         ]
         logger.info(f'Full scraped row for job: {str(row)[:200] + "..."}')
         return row
+
+    except Exception as e:
+        logger.error(f'Error in scrape_job_details for {job_url}: {str(e)}')
+        return None
 
 def main():
     auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
