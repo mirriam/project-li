@@ -1,8 +1,7 @@
 name: Run LinkedIn Scraper
-
 on:
   schedule:
-    - cron: '0 * * * *'  # Every hour at minute 0
+    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       country:
@@ -10,10 +9,9 @@ on:
         required: true
         default: 'Mauritius'
       specialty:
-        description: 'Job specialty or keywords (e.g., software engineer)'
+        description: 'Job specialty or keywords'
         required: false
         default: ''
-
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -27,24 +25,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Log inputs
         run: |
           echo "Running scraper with COUNTRY=$COUNTRY, SPECIALTY=$SPECIALTY"
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
       - name: Run scraper
         run: python scraper.py
-
       - name: Commit changes
         run: |
           git config --local user.email "github-actions@github.com"
