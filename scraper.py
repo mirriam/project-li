@@ -1,3 +1,4 @@
+```python
 import requests
 from bs4 import BeautifulSoup
 import logging
@@ -675,9 +676,12 @@ def scrape_job_details(job_url):
             final_application_url,
             resolved_application_url
         ]
+    except Exception as e:
+        logger.error(f"Failed to scrape job details from {job_url}: {str(e)}")
+        return None
 
 def main():
-    auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
+    auth_string = f"{wp_username}:{wp_app_password}"
     auth = base64.b64encode(auth_string.encode()).decode()
     wp_headers = {
         "Authorization": f"Basic {auth}",
@@ -689,3 +693,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
