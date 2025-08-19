@@ -36,6 +36,9 @@ wp_rest_nonce = args.wp_rest_nonce
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Initialize results list for JSON output
+scrape_results = []
+
 # HTTP headers for scraping
 headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
@@ -161,9 +164,25 @@ def save_company_to_wordpress(index, company_data, auth_headers):
     company_type = company_data.get("company_type", "")
     company_address = company_data.get("company_address", "")
     
+    result = {
+        "type": "company",
+        "job_id": "",
+        "job_title": "",
+        "company_name": company_name,
+        "post_id": "",
+        "status": "",
+        "error": ""
+    }
+
     existing_id, existing_url = check_existing_entry(company_name, 'company', company_name, auth_headers)
     if existing_id:
         logger.info(f"Skipping duplicate company: {company_name}, Post ID: {existing_id}")
+        result.update({
+            "post_id": str(existing_id),
+            "status": "skipped",
+            "error": "Duplicate company"
+        })
+        scrape_results.append(result)
         print(f"Company '{company_name}' skipped - already posted. Post ID: {existing_id}")
         return existing_id, existing_url
 
@@ -184,6 +203,8 @@ def save_company_to_wordpress(index, company_data, auth_headers):
             logger.info(f"Uploaded logo for {company_name}, Attachment ID: {attachment_id}")
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to upload logo for {company_name}: {str(e)}")
+            result["error"] = f"Logo upload failed: {str(e)}"
+            scrape_results.append(result)
 
     post_data = {
         "title": company_name,
@@ -204,19 +225,37 @@ def save_company_to_wordpress(index, company_data, auth_headers):
             "_company_video": ""
         }
     }
+    logger.debug(f"Company post data for {company_name}: {json.dumps(post_data, indent=2)}")
     try:
         response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=True)
         response.raise_for_status()
         post = response.json()
+        result.update({
+            "post_id": str(post.get("id")),
+            "status": "success"
+        })
         logger.info(f"Successfully posted company {company_name}: Post ID {post.get('id')}")
+        scrape_results.append(result)
         return post.get("id"), post.get("link")
     except requests.exceptions.HTTPError as e:
-        logger.error(f"Failed to post company {company_name}: {str(e)}")
+        error_message = f"Failed to post company {company_name}: {str(e)}"
         if response.status_code == 403:
-            logger.error(f"403 Forbidden details: {response.text}")
+            error_message += f"\n403 Forbidden details: {response.text}"
+        logger.error(error_message)
+        result.update({
+            "status": "failed",
+            "error": error_message
+        })
+        scrape_results.append(result)
         return None, None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to post company {company_name}: {str(e)}")
+        error_message = f"Failed to post company {company_name}: {str(e)}"
+        logger.error(error_message)
+        result.update({
+            "status": "failed",
+            "error": error_message
+        })
+        scrape_results.append(result)
         return None, None
 
 def save_job_to_wordpress(index, job_data, company_id, auth_headers):
@@ -231,9 +270,26 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
     company_industry = job_data.get("company_industry", "")
     company_founded = job_data.get("company_founded", "")
     
+    job_id = generate_job_id(job_title, company_name)
+    result = {
+        "type": "job",
+        "job_id": job_id,
+        "job_title": job_title,
+        "company_name": company_name,
+        "post_id": "",
+        "status": "",
+        "error": ""
+    }
+
     existing_id, existing_url = check_existing_entry(job_title, 'job', company_name, auth_headers)
     if existing_id:
         logger.info(f"Skipping duplicate job: {job_title} at {company_name}, Post ID: {existing_id}")
+        result.update({
+            "post_id": str(existing_id),
+            "status": "skipped",
+            "error": "Duplicate job"
+        })
+        scrape_results.append(result)
         print(f"Job '{job_title}' at {company_name} skipped - already posted. Post ID: {existing_id}")
         return existing_id, existing_url
 
@@ -264,6 +320,8 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
             logger.info(f"Uploaded logo for job {job_title}, Attachment ID: {attachment_id}")
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to upload logo for job {job_title}: {str(e)}")
+            result["error"] = f"Logo upload failed: {str(e)}"
+            scrape_results.append(result)
 
     post_data = {
         "title": sanitize_text(job_title),
@@ -292,21 +350,46 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
         "job_listing_type": [job_type_id] if (job_type_id := get_or_create_term(job_type, "job_type", WP_JOB_TYPE_URL, auth_headers)) else [],
         "job_listing_region": [job_region_id] if (job_region_id := get_or_create_term(location, "job_region", WP_JOB_REGION_URL, auth_headers)) else []
     }
-    
+    logger.debug(f"Job post data for {job_title}: {json.dumps(post_data, indent=2)}")
     try:
         response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=True)
         response.raise_for_status()
         post = response.json()
+        result.update({
+            "post_id": str(post.get("id")),
+            "status": "success"
+        })
         logger.info(f"Successfully posted job {job_title}: Post ID {post.get('id')}")
+        scrape_results.append(result)
         return post.get("id"), post.get("link")
     except requests.exceptions.HTTPError as e:
-        logger.error(f"Failed to post job {job_title}: {str(e)}")
+        error_message = f"Failed to post job {job_title}: {str(e)}"
         if response.status_code == 403:
-            logger.error(f"403 Forbidden details: {response.text}")
+            error_message += f"\n403 Forbidden details: {response.text}"
+        logger.error(error_message)
+        result.update({
+            "status": "failed",
+            "error": error_message
+        })
+        scrape_results.append(result)
         return None, None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to post job {job_title}: {str(e)}")
+        error_message = f"Failed to post job {job_title}: {str(e)}"
+        logger.error(error_message)
+        result.update({
+            "status": "failed",
+            "error": error_message
+        })
+        scrape_results.append(result)
         return None, None
+
+def save_results_to_json():
+    try:
+        with open("scrape_results.json", "w") as f:
+            json.dump(scrape_results, f, indent=2)
+        logger.info("Saved scrape results to scrape_results.json")
+    except Exception as e:
+        logger.error(f"Failed to save scrape results: {str(e)}")
 
 def load_processed_ids():
     processed_ids = set()
@@ -366,6 +449,15 @@ def crawl(auth_headers, processed_ids):
             response.raise_for_status()
             if "login" in response.url or "challenge" in response.url:
                 logger.error("Login or CAPTCHA detected, stopping crawl")
+                scrape_results.append({
+                    "type": "system",
+                    "job_id": "",
+                    "job_title": "",
+                    "company_name": "",
+                    "post_id": "",
+                    "status": "failed",
+                    "error": "Login or CAPTCHA detected"
+                })
                 break
             soup = BeautifulSoup(response.text, 'html.parser')
             job_list = soup.select("#main-content > section > ul > li > div > a")
@@ -376,6 +468,15 @@ def crawl(auth_headers, processed_ids):
                 job_data = scrape_job_details(job_url)
                 if not job_data:
                     logger.error(f"No data scraped for job: {job_url}")
+                    scrape_results.append({
+                        "type": "job",
+                        "job_id": "",
+                        "job_title": "Unknown",
+                        "company_name": "",
+                        "post_id": "",
+                        "status": "failed",
+                        "error": f"No data scraped for job: {job_url}"
+                    })
                     print(f"Job (URL: {job_url}) failed to scrape")
                     failure_count += 1
                     total_jobs += 1
@@ -419,12 +520,30 @@ def crawl(auth_headers, processed_ids):
                 
                 if job_id in processed_ids:
                     logger.info(f"Skipping processed job: {job_id} ({job_title} at {company_name})")
+                    scrape_results.append({
+                        "type": "job",
+                        "job_id": job_id,
+                        "job_title": job_title,
+                        "company_name": company_name,
+                        "post_id": "",
+                        "status": "skipped",
+                        "error": "Already processed"
+                    })
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) skipped - already processed")
                     total_jobs += 1
                     continue
                 
                 if not company_name or company_name.lower() == "unknown":
                     logger.info(f"Skipping job with unknown company: {job_title} (ID: {job_id})")
+                    scrape_results.append({
+                        "type": "job",
+                        "job_id": job_id,
+                        "job_title": job_title,
+                        "company_name": "",
+                        "post_id": "",
+                        "status": "skipped",
+                        "error": "Unknown company"
+                    })
                     print(f"Job '{job_title}' (ID: {job_id}) skipped - unknown company")
                     failure_count += 1
                     total_jobs += 1
@@ -442,19 +561,28 @@ def crawl(auth_headers, processed_ids):
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) posted. Post ID: {job_post_id}")
                     success_count += 1
                 else:
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post")
                     failure_count += 1
             
             save_last_page(i)
         
         except Exception as e:
             logger.error(f'Error fetching job search page: {url} - {str(e)}')
+            scrape_results.append({
+                "type": "system",
+                "job_id": "",
+                "job_title": "",
+                "company_name": "",
+                "post_id": "",
+                "status": "failed",
+                "error": f"Error fetching job search page: {url} - {str(e)}"
+            })
             failure_count += 1
     
     print("\n--- Summary ---")
     print(f"Total jobs processed: {total_jobs}")
     print(f"Successfully posted: {success_count}")
     print(f"Failed to post or scrape: {failure_count}")
+    save_results_to_json()
 
 def scrape_job_details(job_url):
     logger.info(f'Fetching job details from: {job_url}')
@@ -491,8 +619,8 @@ def scrape_job_details(job_url):
         logger.info(f'Deduplicated location for {job_title}: {location}')
 
         environment = ''
-        env_element = soup.select_one(".topcard__flavor--metadata")
-        for elem in env_element:
+        env_elements = soup.select(".topcard__flavor--metadata")
+        for elem in env_elements:
             text = elem.get_text().strip().lower()
             if 'remote' in text or 'hybrid' in text or 'on-site' in text:
                 environment = elem.get_text().strip()
@@ -711,15 +839,50 @@ def main():
         "X-WP-Nonce": wp_rest_nonce
     }
     
-    # Test authentication
+    # Test authentication and permissions
     try:
         test_response = requests.get(f"{base_url}/wp-json/wp/v2/users/me", headers=wp_headers, timeout=10, verify=True)
         test_response.raise_for_status()
-        logger.info(f"Authentication successful for user: {wp_username}")
+        user_data = test_response.json()
+        logger.info(f"Authentication successful for user: {wp_username} (ID: {user_data.get('id')})")
+        
+        # Test permission to create staging_scraped posts
+        test_post_data = {
+            "title": "Permission Test",
+            "content": "Testing permission to create staging_scraped post",
+            "status": "publish",
+            "meta": {"_scraped_type": "test"}
+        }
+        test_response = requests.post(WP_URL, json=test_post_data, headers=wp_headers, timeout=15, verify=True)
+        test_response.raise_for_status()
+        logger.info("User has permission to create staging_scraped posts")
     except requests.exceptions.HTTPError as e:
-        logger.error(f"Authentication test failed: {str(e)}")
+        logger.error(f"Authentication or permission test failed: {str(e)}")
         if test_response.status_code == 403:
             logger.error(f"403 Forbidden details: {test_response.text}")
+            scrape_results.append({
+                "type": "system",
+                "job_id": "",
+                "job_title": "",
+                "company_name": "",
+                "post_id": "",
+                "status": "failed",
+                "error": f"Authentication or permission test failed: {test_response.text}"
+            })
+            save_results_to_json()
+        return
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Authentication test failed: {str(e)}")
+        scrape_results.append({
+            "type": "system",
+            "job_id": "",
+            "job_title": "",
+            "company_name": "",
+            "post_id": "",
+            "status": "failed",
+            "error": f"Authentication test failed: {str(e)}"
+        })
+        save_results_to_json()
         return
     
     processed_ids = load_processed_ids()
