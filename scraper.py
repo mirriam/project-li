@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 import logging
 import time
 import re
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urljoin, urlparse, parse_qs, unquote
 import base64
 import json
 import hashlib
@@ -11,33 +11,10 @@ import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
-import argparse
-
-# Configure command-line arguments
-parser = argparse.ArgumentParser(description="LinkedIn job scraper for WordPress")
-parser.add_argument("--wp-base-url", required=True, help="WordPress base URL (e.g., https://your-site.com)")
-parser.add_argument("--wp-username", required=True, help="WordPress username for API authentication")
-parser.add_argument("--wp-app-password", required=True, help="WordPress application password for API authentication")
-parser.add_argument("--scrape-location", required=True, help="Location for job scraping (e.g., Worldwide)")
-parser.add_argument("--wp-rest-nonce", required=True, help="WordPress REST API nonce")
-args = parser.parse_args()
-
-# Get GitHub token from environment (optional)
-github_token = os.getenv("GITHUB_TOKEN")
-
-# Assign arguments to variables
-base_url = args.wp_base_url.rstrip('/')
-wp_username = args.wp_username
-wp_app_password = args.wp_app_password
-scrape_location = args.scrape_location
-wp_rest_nonce = args.wp_rest_nonce
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s,%(msecs)d - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Initialize results list for JSON output
-scrape_results = []
 
 # HTTP headers for scraping
 headers = {
@@ -45,11 +22,16 @@ headers = {
 }
 
 # Constants for WordPress
-WP_URL = f"{base_url}/wp-json/wp/v2/staging-scraped"
-WP_MEDIA_URL = f"{base_url}/wp-json/wp/v2/media"
-WP_JOB_TYPE_URL = f"{base_url}/wp-json/wp/v2/job_listing_type"
-WP_JOB_REGION_URL = f"{base_url}/wp-json/wp/v2/job_listing_region"
-PROCESSED_IDS_FILE = "processed_job_ids.csv"
+WP_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job-listings"
+WP_COMPANY_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/company"
+WP_MEDIA_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/media"
+WP_JOB_TYPE_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job_listing_type"
+WP_JOB_REGION_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job_listing_region"
+WP_SAVE_COMPANY_URL = "https://mauritius.mimusjobs.com/wp-json/scraper/v1/save-company"
+WP_SAVE_JOB_URL = "https://mauritius.mimusjobs.com/wp-json/scraper/v1/save-job"
+WP_USERNAME = "mary"
+WP_APP_PASSWORD = "Piab Mwog pfiq pdfK BOGH hDEy"
+PROCESSED_IDS_FILE = "mauritius_processed_job_ids.csv"
 LAST_PAGE_FILE = "last_processed_page.txt"
 JOB_TYPE_MAPPING = {
     "Full-time": "full-time",
@@ -85,15 +67,18 @@ def sanitize_text(text, is_url=False):
     return ' '.join(text.split())
 
 def normalize_for_deduplication(text):
-    text = re.sub(r'[^\w\s]', '', text)
-    text = re.sub(r'\s+', '', text)
+    """Normalize text for deduplication by removing spaces, punctuation, and converting to lowercase."""
+    text = re.sub(r'[^\w\s]', '', text)  # Remove punctuation
+    text = re.sub(r'\s+', '', text)      # Remove all whitespace
     return text.lower()
 
 def generate_job_id(job_title, company_name):
+    """Generate a unique job ID based on job title and company name."""
     combined = f"{job_title}_{company_name}"
     return hashlib.md5(combined.encode()).hexdigest()[:16]
 
 def split_paragraphs(text, max_length=200):
+    """Split large paragraphs into smaller ones, each up to max_length characters."""
     paragraphs = text.split('\n\n')
     result = []
     for para in paragraphs:
@@ -118,14 +103,14 @@ def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
         return None
     check_url = f"{wp_url}?search={term_name}"
     try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=True)
+        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
         response.raise_for_status()
         terms = response.json()
         for term in terms:
             if term['name'].lower() == term_name.lower():
                 return term['id']
         post_data = {"name": term_name, "slug": term_name.lower().replace(' ', '-')}
-        response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=10, verify=True)
+        response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=10, verify=False)
         response.raise_for_status()
         term = response.json()
         logger.info(f"Created new {taxonomy} term: {term_name}, ID: {term['id']}")
@@ -134,27 +119,22 @@ def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
         logger.error(f"Failed to get or create {taxonomy} term {term_name}: {str(e)}")
         return None
 
-def check_existing_entry(title, scraped_type, company_name, auth_headers):
-    check_url = f"{WP_URL}?search={title}&_fields=id,link,meta&context=view"
+def check_existing_job(job_title, company_name, auth_headers):
+    """Check if a job with the same title and company already exists on WordPress."""
+    check_url = f"{WP_URL}?search={job_title}&meta_key=_company_name&meta_value={company_name}"
     try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=True)
+        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
         response.raise_for_status()
         posts = response.json()
-        for post in posts:
-            meta = post.get('meta', {})
-            if meta.get('_scraped_type') == scraped_type and meta.get('_company_name') == company_name:
-                if scraped_type == 'job' and meta.get('_job_title') == title:
-                    logger.info(f"Found existing {scraped_type} {title}: Post ID {post.get('id')}")
-                    return post.get('id'), post.get('link')
-                elif scraped_type == 'company':
-                    logger.info(f"Found existing {scraped_type} {title}: Post ID {post.get('id')}")
-                    return post.get('id'), post.get('link')
+        if posts:
+            logger.info(f"Found existing job on WordPress: {job_title} at {company_name}, Post ID: {posts[0].get('id')}")
+            return posts[0].get('id'), posts[0].get('link')
         return None, None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to check existing {scraped_type} {title}: {str(e)}")
+        logger.error(f"Failed to check existing job {job_title} at {company_name}: {str(e)}")
         return None, None
 
-def save_company_to_wordpress(index, company_data, auth_headers):
+def save_company_to_wordpress(index, company_data, wp_headers):
     company_name = company_data.get("company_name", "")
     company_details = company_data.get("company_details", "")
     company_logo = company_data.get("company_logo", "")
@@ -164,103 +144,63 @@ def save_company_to_wordpress(index, company_data, auth_headers):
     company_type = company_data.get("company_type", "")
     company_address = company_data.get("company_address", "")
     
-    result = {
-        "type": "company",
-        "job_id": "",
-        "job_title": "",
-        "company_name": company_name,
-        "post_id": "",
-        "status": "",
-        "error": ""
-    }
-
-    existing_id, existing_url = check_existing_entry(company_name, 'company', company_name, auth_headers)
-    if existing_id:
-        logger.info(f"Skipping duplicate company: {company_name}, Post ID: {existing_id}")
-        result.update({
-            "post_id": str(existing_id),
-            "status": "skipped",
-            "error": "Duplicate company"
-        })
-        scrape_results.append(result)
-        print(f"Company '{company_name}' skipped - already posted. Post ID: {existing_id}")
-        return existing_id, existing_url
-
+    company_id = hashlib.md5(company_name.encode()).hexdigest()[:16]
+    
     attachment_id = 0
     if company_logo:
         try:
-            logo_response = requests.get(company_logo, headers=headers, timeout=10, verify=True)
+            logo_response = requests.get(company_logo, headers=headers, timeout=10)
             logo_response.raise_for_status()
             logo_headers = {
-                "Authorization": auth_headers["Authorization"],
+                "Authorization": wp_headers["Authorization"],
                 "Content-Disposition": f'attachment; filename="{company_name}_logo.jpg"',
-                "Content-Type": logo_response.headers.get("content-type", "image/jpeg"),
-                "X-WP-Nonce": auth_headers["X-WP-Nonce"]
+                "Content-Type": logo_response.headers.get("content-type", "image/jpeg")
             }
-            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, timeout=10, verify=True)
+            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, verify=False)
             media_response.raise_for_status()
             attachment_id = media_response.json().get("id", 0)
             logger.info(f"Uploaded logo for {company_name}, Attachment ID: {attachment_id}")
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             logger.error(f"Failed to upload logo for {company_name}: {str(e)}")
-            result["error"] = f"Logo upload failed: {str(e)}"
-            scrape_results.append(result)
 
     post_data = {
-        "title": company_name,
-        "content": company_details,
-        "status": "publish",
+        "company_id": company_id,
+        "company_name": sanitize_text(company_name),
+        "company_details": company_details,
         "featured_media": attachment_id,
-        "meta": {
-            "_scraped_type": "company",
-            "_company_name": sanitize_text(company_name),
-            "_company_logo": str(attachment_id) if attachment_id else "",
-            "_company_website": sanitize_text(company_website, is_url=True),
-            "_company_industry": sanitize_text(company_industry),
-            "_company_founded": sanitize_text(company_founded),
-            "_company_type": sanitize_text(company_type),
-            "_company_address": sanitize_text(company_address),
-            "_company_tagline": sanitize_text(company_details),
-            "_company_twitter": "",
-            "_company_video": ""
-        }
+        "company_website": sanitize_text(company_website, is_url=True),
+        "company_industry": sanitize_text(company_industry),
+        "company_founded": sanitize_text(company_founded),
+        "company_type": sanitize_text(company_type),
+        "company_address": sanitize_text(company_address),
+        "company_tagline": sanitize_text(company_details),
+        "company_twitter": "",
+        "company_video": ""
     }
-    logger.debug(f"Company post data for {company_name}: {json.dumps(post_data, indent=2)}")
+    response = None
     try:
-        response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=True)
+        response = requests.post(WP_SAVE_COMPANY_URL, json=post_data, headers=wp_headers, timeout=15, verify=False)
         response.raise_for_status()
-        post = response.json()
-        result.update({
-            "post_id": str(post.get("id")),
-            "status": "success"
-        })
-        logger.info(f"Successfully posted company {company_name}: Post ID {post.get('id')}")
-        scrape_results.append(result)
-        return post.get("id"), post.get("link")
-    except requests.exceptions.HTTPError as e:
-        error_message = f"Failed to post company {company_name}: {str(e)}\nResponse: {response.text}"
-        logger.error(error_message)
-        result.update({
-            "status": "failed",
-            "error": error_message
-        })
-        scrape_results.append(result)
-        return None, None
+        res = response.json()
+        if res.get("success"):
+            logger.info(f"Successfully saved company {company_name}: Company ID {company_id}")
+            return company_id, "https://mauritius.mimusjobs.com/wp-content/uploads/companies.json"
+        elif res.get("message") == "Company exists":
+            logger.info(f"Found existing company {company_name}: Company ID {company_id}")
+            return company_id, "https://mauritius.mimusjobs.com/wp-content/uploads/companies.json"
+        else:
+            logger.error(f"Failed to save company {company_name}: {res}")
+            return None, None
     except requests.exceptions.RequestException as e:
-        error_message = f"Failed to post company {company_name}: {str(e)}"
-        logger.error(error_message)
-        result.update({
-            "status": "failed",
-            "error": error_message
-        })
-        scrape_results.append(result)
+        logger.error(f"Failed to save company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}")
         return None, None
 
-def save_job_to_wordpress(index, job_data, company_id, auth_headers):
+def save_article_to_wordpress(index, job_data, company_id, auth_headers):
     job_title = job_data.get("job_title", "")
     job_description = job_data.get("job_description", "")
     job_type = job_data.get("job_type", "")
-    location = job_data.get("location", scrape_location)
+    location = job_data.get("location", "Mauritius")
+    job_url = job_data.get("job_url", "")
     company_name = job_data.get("company_name", "")
     company_logo = job_data.get("company_logo", "")
     environment = job_data.get("environment", "").lower()
@@ -269,28 +209,7 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
     company_founded = job_data.get("company_founded", "")
     
     job_id = generate_job_id(job_title, company_name)
-    result = {
-        "type": "job",
-        "job_id": job_id,
-        "job_title": job_title,
-        "company_name": company_name,
-        "post_id": "",
-        "status": "",
-        "error": ""
-    }
-
-    existing_id, existing_url = check_existing_entry(job_title, 'job', company_name, auth_headers)
-    if existing_id:
-        logger.info(f"Skipping duplicate job: {job_title} at {company_name}, Post ID: {existing_id}")
-        result.update({
-            "post_id": str(existing_id),
-            "status": "skipped",
-            "error": "Duplicate job"
-        })
-        scrape_results.append(result)
-        print(f"Job '{job_title}' at {company_name} skipped - already posted. Post ID: {existing_id}")
-        return existing_id, existing_url
-
+    
     application = ''
     if '@' in job_data.get("description_application_info", ""):
         application = job_data.get("description_application_info", "")
@@ -304,373 +223,101 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
     attachment_id = 0
     if company_logo:
         try:
-            logo_response = requests.get(company_logo, headers=headers, timeout=10, verify=True)
+            logo_response = requests.get(company_logo, headers=headers, timeout=10)
             logo_response.raise_for_status()
             logo_headers = {
                 "Authorization": auth_headers["Authorization"],
                 "Content-Disposition": f'attachment; filename="{company_name}_logo_job_{index}.jpg"',
-                "Content-Type": logo_response.headers.get("content-type", "image/jpeg"),
-                "X-WP-Nonce": auth_headers["X-WP-Nonce"]
+                "Content-Type": logo_response.headers.get("content-type", "image/jpeg")
             }
-            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, timeout=10, verify=True)
+            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, verify=False)
             media_response.raise_for_status()
             attachment_id = media_response.json().get("id", 0)
             logger.info(f"Uploaded logo for job {job_title}, Attachment ID: {attachment_id}")
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             logger.error(f"Failed to upload logo for job {job_title}: {str(e)}")
-            result["error"] = f"Logo upload failed: {str(e)}"
-            scrape_results.append(result)
 
     post_data = {
-        "title": sanitize_text(job_title),
-        "content": job_description,
-        "status": "publish",
+        "job_id": job_id,
+        "job_title": sanitize_text(job_title),
+        "job_description": job_description,
         "featured_media": attachment_id,
-        "meta": {
-            "_scraped_type": "job",
-            "_job_title": sanitize_text(job_title),
-            "_job_location": sanitize_text(location),
-            "_job_type": sanitize_text(job_type),
-            "_job_description": job_description,
-            "_job_salary": sanitize_text(job_salary),
-            "_application": sanitize_text(application, is_url=('@' not in application)),
-            "_company_id": str(company_id) if company_id else "",
-            "_company_name": sanitize_text(company_name),
-            "_company_website": sanitize_text(job_data.get("company_website_url", ""), is_url=True),
-            "_company_logo": str(attachment_id) if attachment_id else "",
-            "_company_tagline": sanitize_text(job_data.get("company_details", "")),
-            "_company_address": sanitize_text(job_data.get("company_address", "")),
-            "_company_industry": sanitize_text(company_industry),
-            "_company_founded": sanitize_text(company_founded),
-            "_company_twitter": "",
-            "_company_video": ""
-        },
-        "job_listing_type": [job_type_id] if (job_type_id := get_or_create_term(job_type, "job_type", WP_JOB_TYPE_URL, auth_headers)) else [],
-        "job_listing_region": [job_region_id] if (job_region_id := get_or_create_term(location, "job_region", WP_JOB_REGION_URL, auth_headers)) else []
+        "job_location": sanitize_text(location),
+        "job_type": sanitize_text(job_type),
+        "job_salary": sanitize_text(job_salary),
+        "application": sanitize_text(application, is_url=('@' not in application)),
+        "company_id": str(company_id) if company_id else "",
+        "company_name": sanitize_text(company_name),
+        "company_website": sanitize_text(job_data.get("company_website_url", ""), is_url=True),
+        "company_logo": str(attachment_id) if attachment_id else "",
+        "company_tagline": sanitize_text(job_data.get("company_details", "")),
+        "company_address": sanitize_text(job_data.get("company_address", "")),
+        "company_industry": sanitize_text(company_industry),
+        "company_founded": sanitize_text(company_founded),
+        "company_twitter": "",
+        "company_video": ""
     }
-    logger.debug(f"Job post data for {job_title}: {json.dumps(post_data, indent=2)}")
+    
+    logger.info(f"Final job post payload for {job_title}: {json.dumps(post_data, indent=2)[:200]}...")
+    
     try:
-        response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=True)
+        response = requests.post(WP_SAVE_JOB_URL, json=post_data, headers=auth_headers, timeout=15, verify=False)
         response.raise_for_status()
-        post = response.json()
-        result.update({
-            "post_id": str(post.get("id")),
-            "status": "success"
-        })
-        logger.info(f"Successfully posted job {job_title}: Post ID {post.get('id')}")
-        scrape_results.append(result)
-        return post.get("id"), post.get("link")
-    except requests.exceptions.HTTPError as e:
-        error_message = f"Failed to post job {job_title}: {str(e)}\nResponse: {response.text}"
-        logger.error(error_message)
-        result.update({
-            "status": "failed",
-            "error": error_message
-        })
-        scrape_results.append(result)
-        return None, None
+        res = response.json()
+        if res.get("success"):
+            logger.info(f"Successfully saved job {job_title}: Job ID {job_id}")
+            return job_id, "https://mauritius.mimusjobs.com/wp-content/uploads/jobs.json"
+        elif res.get("message") == "Job exists":
+            logger.info(f"Found existing job {job_title}: Job ID {job_id}")
+            return job_id, "https://mauritius.mimusjobs.com/wp-content/uploads/jobs.json"
+        else:
+            logger.error(f"Failed to save job {job_title}: {res}")
+            return None, None
     except requests.exceptions.RequestException as e:
-        error_message = f"Failed to post job {job_title}: {str(e)}"
-        logger.error(error_message)
-        result.update({
-            "status": "failed",
-            "error": error_message
-        })
-        scrape_results.append(result)
+        logger.error(f"Failed to save job {job_title}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}")
         return None, None
-
-def save_results_to_json():
-    try:
-        with open("scrape_results.json", "w") as f:
-            json.dump(scrape_results, f, indent=2)
-        logger.info("Saved scrape results to scrape_results.json")
-    except Exception as e:
-        logger.error(f"Failed to save scrape results: {str(e)}")
 
 def load_processed_ids():
+    """Load processed job IDs from file."""
     processed_ids = set()
     try:
         if os.path.exists(PROCESSED_IDS_FILE):
             with open(PROCESSED_IDS_FILE, "r") as f:
                 processed_ids = set(line.strip() for line in f if line.strip())
-            logger.info(f"Loaded {len(processed_ids)} processed job IDs")
-        return processed_ids
+            logger.info(f"Loaded {len(processed_ids)} processed job IDs from {PROCESSED_IDS_FILE}")
     except Exception as e:
-        logger.error(f"Failed to load processed IDs: {str(e)}")
-        return set()
+        logger.error(f"Failed to load processed IDs from {PROCESSED_IDS_FILE}: {str(e)}")
+    return processed_ids
 
 def save_processed_id(job_id):
+    """Append a single job ID to the processed IDs file."""
     try:
         with open(PROCESSED_IDS_FILE, "a") as f:
             f.write(f"{job_id}\n")
-        logger.info(f"Saved job ID {job_id}")
+        logger.info(f"Saved job ID {job_id} to {PROCESSED_IDS_FILE}")
     except Exception as e:
-        logger.error(f"Failed to save job ID {job_id}: {str(e)}")
+        logger.error(f"Failed to save job ID {job_id} to {PROCESSED_IDS_FILE}: {str(e)}")
 
 def load_last_page():
+    """Load the last processed page number."""
     try:
         if os.path.exists(LAST_PAGE_FILE):
             with open(LAST_PAGE_FILE, "r") as f:
                 page = int(f.read().strip())
                 logger.info(f"Loaded last processed page: {page}")
                 return page
-        return 0
     except Exception as e:
-        logger.error(f"Failed to load last page: {str(e)}")
-        return 0
+        logger.error(f"Failed to load last page from {LAST_PAGE_FILE}: {str(e)}")
+    return 0
 
 def save_last_page(page):
+    """Save the last processed page number."""
     try:
         with open(LAST_PAGE_FILE, "w") as f:
             f.write(str(page))
-        logger.info(f"Saved last processed page: {page}")
+        logger.info(f"Saved last processed page: {page} to {LAST_PAGE_FILE}")
     except Exception as e:
-        logger.error(f"Failed to save last page: {str(e)}")
-
-def scrape_job_details(job_url):
-    logger.info(f'Fetching job details from: {job_url}')
-    try:
-        session = requests.Session()
-        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        response = session.get(job_url, headers=headers, timeout=15)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        job_title = soup.select_one("h1.top-card-layout__title")
-        job_title = job_title.get_text().strip() if job_title else ''
-        logger.info(f'Scraped Job Title: {job_title}')
-
-        company_logo = soup.select_one("#main-content > section.core-rail.mx-auto.papabear\:w-core-rail-width.mamabear\:max-w-\[790px\].babybear\:max-w-\[790px\] > div > section.top-card-layout.container-lined.overflow-hidden.babybear\:rounded-\[0px\] > div > a > img")
-        company_logo = (company_logo.get('data-delayed-url') or company_logo.get('src') or '') if company_logo else ''
-        logger.info(f'Scraped Company Logo URL: {company_logo}')
-
-        company_name = soup.select_one(".topcard__org-name-link")
-        company_name = company_name.get_text().strip() if company_name else ''
-        logger.info(f'Scraped Company Name: {company_name}')
-
-        company_url = soup.select_one(".topcard__org-name-link")
-        company_url = company_url['href'] if company_url and company_url.get('href') else ''
-        if company_url:
-            company_url = re.sub(r'\?.*$', '', company_url)
-            logger.info(f'Scraped Company URL: {company_url}')
-
-        location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
-        location = location.get_text().strip() if location else scrape_location
-        location_parts = [part.strip() for part in location.split(',') if part.strip()]
-        location = ', '.join(dict.fromkeys(location_parts))
-        logger.info(f'Deduplicated location for {job_title}: {location}')
-
-        environment = ''
-        env_elements = soup.select(".topcard__flavor--metadata")
-        for elem in env_elements:
-            text = elem.get_text().strip().lower()
-            if 'remote' in text or 'hybrid' in text or 'on-site' in text:
-                environment = elem.get_text().strip()
-                break
-        logger.info(f'Scraped Environment: {environment}')
-
-        level = soup.select_one(".description__job-criteria-list > li:nth-child(1) > span")
-        level = level.get_text().strip() if level else ''
-        logger.info(f'Scraped Level: {level}')
-
-        job_type = soup.select_one(".description__job-criteria-list > li:nth-child(2) > span")
-        job_type = job_type.get_text().strip() if job_type else ''
-        job_type = FRENCH_TO_ENGLISH_JOB_TYPE.get(job_type, job_type)
-        logger.info(f'Scraped Type: {job_type}')
-
-        job_functions = soup.select_one(".description__job-criteria-list > li:nth-child(3) > span")
-        job_functions = job_functions.get_text().strip() if job_functions else ''
-        logger.info(f'Scraped Job Functions: {job_functions}')
-
-        industries = soup.select_one(".description__job-criteria-list > li:nth-child(4) > span")
-        industries = industries.get_text().strip() if industries else ''
-        logger.info(f'Scraped Industries: {industries}')
-
-        job_description = ''
-        description_container = soup.select_one(".show-more-less-html__markup")
-        if description_container:
-            paragraphs = description_container.find_all(['p', 'li'], recursive=False)
-            if paragraphs:
-                seen = set()
-                unique_paragraphs = []
-                for p in paragraphs:
-                    para = sanitize_text(p.get_text().strip())
-                    if not para:
-                        continue
-                    norm_para = normalize_for_deduplication(para)
-                    if norm_para and norm_para not in seen:
-                        unique_paragraphs.append(para)
-                        seen.add(norm_para)
-                job_description = '\n\n'.join(unique_paragraphs)
-            else:
-                raw_text = description_container.get_text(separator='\n').strip()
-                paragraphs = [para.strip() for para in raw_text.split('\n\n') if para.strip()]
-                seen = set()
-                unique_paragraphs = []
-                for para in paragraphs:
-                    para = sanitize_text(para)
-                    if not para:
-                        continue
-                    norm_para = normalize_for_deduplication(para)
-                    if norm_para and norm_para not in seen:
-                        unique_paragraphs.append(para)
-                        seen.add(norm_para)
-                job_description = '\n\n'.join(unique_paragraphs)
-            job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
-            job_description = split_paragraphs(job_description, max_length=200)
-            logger.info(f'Scraped Job Description (length): {len(job_description)}')
-
-        description_application_info = ''
-        description_application_url = ''
-        if description_container:
-            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-            emails = re.findall(email_pattern, job_description)
-            if emails:
-                description_application_info = emails[0]
-                logger.info(f'Found email in job description: {description_application_info}')
-            else:
-                links = description_container.find_all('a', href=True)
-                for link in links:
-                    href = link['href']
-                    if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
-                        description_application_url = href
-                        description_application_info = href
-                        logger.info(f'Found application link in job description: {description_application_info}')
-                        break
-
-        application_anchor = soup.select_one("#teriary-cta-container > div > a")
-        application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else None
-        logger.info(f'Scraped Application URL: {application_url}')
-
-        resolved_application_info = ''
-        resolved_application_url = ''
-        final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
-        final_application_url = description_application_url if description_application_url else ''
-
-        if application_url:
-            try:
-                time.sleep(5)
-                resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True, verify=True)
-                resolved_application_url = resp_app.url
-                logger.info(f'Resolved Application URL: {resolved_application_url}')
-                
-                app_soup = BeautifulSoup(resp_app.text, 'html.parser')
-                email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                emails = re.findall(email_pattern, resp_app.text)
-                if emails:
-                    resolved_application_info = emails[0]
-                else:
-                    links = app_soup.find_all('a', href=True)
-                    for link in links:
-                        href = link['href']
-                        if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
-                            resolved_application_info = href
-                            break
-
-                if final_application_email and resolved_application_info and '@' in resolved_application_info:
-                    final_application_email = final_application_email
-                elif resolved_application_info and '@' in resolved_application_info:
-                    final_application_email = resolved_application_info
-
-                if description_application_url and resolved_application_url:
-                    final_application_url = description_application_url if description_application_url == resolved_application_url else resolved_application_url
-                elif resolved_application_url:
-                    final_application_url = resolved_application_url
-
-            except Exception as e:
-                logger.error(f'Failed to follow application URL: {str(e)}')
-                final_application_url = description_application_url if description_application_url else application_url or ''
-
-        company_details = ''
-        company_website_url = ''
-        company_industry = ''
-        company_size = ''
-        company_headquarters = ''
-        company_type = ''
-        company_founded = ''
-        company_specialties = ''
-        company_address = ''
-
-        if company_url:
-            logger.info(f'Fetching company page: {company_url}')
-            try:
-                company_response = session.get(company_url, headers=headers, timeout=15)
-                company_response.raise_for_status()
-                company_soup = BeautifulSoup(company_response.text, 'html.parser')
-
-                company_details_elem = company_soup.select_one("p.about-us__description") or company_soup.select_one("section.core-section-container > div > p")
-                company_details = company_details_elem.get_text().strip() if company_details_elem else ''
-
-                company_website_anchor = company_soup.select_one("dl > div:nth-child(1) > dd > a")
-                company_website_url = company_website_anchor['href'] if company_website_anchor and company_website_anchor.get('href') else ''
-                if 'linkedin.com/redir/redirect' in company_website_url:
-                    parsed_url = urlparse(company_website_url)
-                    query_params = parse_qs(parsed_url.query)
-                    if 'url' in query_params:
-                        company_website_url = unquote(query_params['url'][0])
-                if company_website_url and 'linkedin.com' not in company_website_url:
-                    try:
-                        time.sleep(5)
-                        resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True, verify=True)
-                        company_website_url = resp_company_web.url
-                    except Exception:
-                        company_website_url = ''
-                else:
-                    company_website_url = ''
-
-                def get_company_detail(label):
-                    elements = company_soup.select("section.core-section-container.core-section-container--with-border > div > dl > div")
-                    for elem in elements:
-                        dt = elem.find("dt")
-                        if dt and dt.get_text().strip().lower() == label.lower():
-                            dd = elem.find("dd")
-                            return dd.get_text().strip() if dd else ''
-                    return ''
-
-                company_industry = get_company_detail("Industry")
-                company_size = get_company_detail("Company size")
-                company_headquarters = get_company_detail("Headquarters")
-                company_type = get_company_detail("Type")
-                company_founded = get_company_detail("Founded")
-                company_specialties = get_company_detail("Specialties")
-                company_address = company_soup.select_one("#address-0")
-                company_address = company_address.get_text().strip() if company_address else company_headquarters
-            except Exception as e:
-                logger.error(f'Error fetching company page: {company_url} - {str(e)}')
-
-        return [
-            job_title,
-            company_logo,
-            company_name,
-            company_url,
-            location,
-            environment,
-            job_type,
-            level,
-            job_functions,
-            industries,
-            job_description,
-            job_url,
-            company_details,
-            company_website_url,
-            company_industry,
-            company_size,
-            company_headquarters,
-            company_type,
-            company_founded,
-            company_specialties,
-            company_address,
-            application_url,
-            description_application_info,
-            resolved_application_info,
-            final_application_email,
-            final_application_url,
-            resolved_application_url
-        ]
-    except Exception as e:
-        logger.error(f"Failed to scrape job details from {job_url}: {str(e)}")
-        return None
+        logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
 
 def crawl(auth_headers, processed_ids):
     success_count = 0
@@ -678,8 +325,8 @@ def crawl(auth_headers, processed_ids):
     total_jobs = 0
     start_page = load_last_page()
     
-    for i in range(start_page, 15):
-        url = f'https://www.linkedin.com/jobs/search?keywords=&location={scrape_location}&start={i * 25}'
+    for i in range(start_page, 15):  # Adjust range to continue from last page
+        url = f'https://www.linkedin.com/jobs/search?keywords=&location=Mauritius&start={i * 25}'
         logger.info(f'Fetching job search page: {url}')
         time.sleep(random.uniform(5, 10))
         try:
@@ -690,35 +337,17 @@ def crawl(auth_headers, processed_ids):
             response.raise_for_status()
             if "login" in response.url or "challenge" in response.url:
                 logger.error("Login or CAPTCHA detected, stopping crawl")
-                scrape_results.append({
-                    "type": "system",
-                    "job_id": "",
-                    "job_title": "",
-                    "company_name": "",
-                    "post_id": "",
-                    "status": "failed",
-                    "error": "Login or CAPTCHA detected"
-                })
                 break
             soup = BeautifulSoup(response.text, 'html.parser')
             job_list = soup.select("#main-content > section > ul > li > div > a")
             urls = [a['href'] for a in job_list if a.get('href')]
-            logger.info(f'Found {len(urls)} job URLs on page')
+            logger.info(f'Found {len(urls)} job URLs on page: {url}')
             
             for index, job_url in enumerate(urls):
                 job_data = scrape_job_details(job_url)
                 if not job_data:
                     logger.error(f"No data scraped for job: {job_url}")
-                    scrape_results.append({
-                        "type": "job",
-                        "job_id": "",
-                        "job_title": "Unknown",
-                        "company_name": "",
-                        "post_id": "",
-                        "status": "failed",
-                        "error": f"No data scraped for job: {job_url}"
-                    })
-                    print(f"Job (URL: {job_url}) failed to scrape")
+                    print(f"Job (URL: {job_url}) failed to scrape: No data returned")
                     failure_count += 1
                     total_jobs += 1
                     continue
@@ -751,7 +380,7 @@ def crawl(auth_headers, processed_ids):
                     "final_application_email": job_data[24],
                     "final_application_url": job_data[25],
                     "resolved_application_url": job_data[26],
-                    "job_salary": ""
+                    "job_salary": ""  # Not scraped, placeholder
                 }
                 
                 job_title = job_dict.get("job_title", "Unknown Job")
@@ -760,31 +389,13 @@ def crawl(auth_headers, processed_ids):
                 job_id = generate_job_id(job_title, company_name)
                 
                 if job_id in processed_ids:
-                    logger.info(f"Skipping processed job: {job_id} ({job_title} at {company_name})")
-                    scrape_results.append({
-                        "type": "job",
-                        "job_id": job_id,
-                        "job_title": job_title,
-                        "company_name": company_name,
-                        "post_id": "",
-                        "status": "skipped",
-                        "error": "Already processed"
-                    })
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) skipped - already processed")
+                    logger.info(f"Skipping already processed job: {job_id} ({job_title} at {company_name})")
+                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) skipped - already processed.")
                     total_jobs += 1
                     continue
                 
                 if not company_name or company_name.lower() == "unknown":
                     logger.info(f"Skipping job with unknown company: {job_title} (ID: {job_id})")
-                    scrape_results.append({
-                        "type": "job",
-                        "job_id": job_id,
-                        "job_title": job_title,
-                        "company_name": "",
-                        "post_id": "",
-                        "status": "skipped",
-                        "error": "Unknown company"
-                    })
                     print(f"Job '{job_title}' (ID: {job_id}) skipped - unknown company")
                     failure_count += 1
                     total_jobs += 1
@@ -793,82 +404,364 @@ def crawl(auth_headers, processed_ids):
                 total_jobs += 1
                 
                 company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
-                job_post_id, job_post_url = save_job_to_wordpress(index, job_dict, company_id, auth_headers)
+                job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
                 
                 if job_post_id:
                     processed_ids.add(job_id)
                     save_processed_id(job_id)
-                    logger.info(f"Processed job: {job_id} - {job_title} at {company_name}")
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) posted. Post ID: {job_post_id}")
+                    logger.info(f"Processed and saved job: {job_id} - {job_title} at {company_name}")
+                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) successfully posted to WordPress. Post ID: {job_post_id}, URL {job_post_url}")
                     success_count += 1
                 else:
+                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post to WordPress. Check logs for details.")
                     failure_count += 1
             
+            # Save the current page as the last processed page
             save_last_page(i)
         
         except Exception as e:
             logger.error(f'Error fetching job search page: {url} - {str(e)}')
-            scrape_results.append({
-                "type": "system",
-                "job_id": "",
-                "job_title": "",
-                "company_name": "",
-                "post_id": "",
-                "status": "failed",
-                "error": f"Error fetching job search page: {url} - {str(e)}"
-            })
             failure_count += 1
     
     print("\n--- Summary ---")
     print(f"Total jobs processed: {total_jobs}")
     print(f"Successfully posted: {success_count}")
     print(f"Failed to post or scrape: {failure_count}")
-    save_results_to_json()
+
+def scrape_job_details(job_url):
+    logger.info(f'Fetching job details from: {job_url}')
+    try:
+        session = requests.Session()
+        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+        response = session.get(job_url, headers=headers, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        job_title = soup.select_one("h1.top-card-layout__title")
+        job_title = job_title.get_text().strip() if job_title else ''
+        logger.info(f'Scraped Job Title: {job_title}')
+
+        company_logo = soup.select_one("#main-content > section.core-rail.mx-auto.papabear\:w-core-rail-width.mamabear\:max-w-\[790px\].babybear\:max-w-\[790px\] > div > section.top-card-layout.container-lined.overflow-hidden.babybear\:rounded-\[0px\] > div > a > img")
+        company_logo = (company_logo.get('data-delayed-url') or company_logo.get('src') or '') if company_logo else ''
+        logger.info(f'Scraped Company Logo URL: {company_logo}')
+
+        company_name = soup.select_one(".topcard__org-name-link")
+        company_name = company_name.get_text().strip() if company_name else ''
+        logger.info(f'Scraped Company Name: {company_name}')
+
+        company_url = soup.select_one(".topcard__org-name-link")
+        company_url = company_url['href'] if company_url and company_url.get('href') else ''
+        if company_url:
+            company_url = re.sub(r'\?.*$', '', company_url)
+            logger.info(f'Scraped Company URL: {company_url}')
+        else:
+            logger.info('No Company URL found')
+
+        location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
+        location = location.get_text().strip() if location else 'Mauritius'
+        location_parts = [part.strip() for part in location.split(',') if part.strip()]
+        location = ', '.join(dict.fromkeys(location_parts))
+        logger.info(f'Deduplicated location for {job_title}: {location}')
+
+        environment = ''
+        env_element = soup.select(".topcard__flavor--metadata")
+        for elem in env_element:
+            text = elem.get_text().strip().lower()
+            if 'remote' in text or 'hybrid' in text or 'on-site' in text:
+                environment = elem.get_text().strip()
+                break
+        logger.info(f'Scraped Environment: {environment}')
+
+        level = soup.select_one(".description__job-criteria-list > li:nth-child(1) > span")
+        level = level.get_text().strip() if level else ''
+        logger.info(f'Scraped Level: {level}')
+
+        job_type = soup.select_one(".description__job-criteria-list > li:nth-child(2) > span")
+        job_type = job_type.get_text().strip() if job_type else ''
+        job_type = FRENCH_TO_ENGLISH_JOB_TYPE.get(job_type, job_type)
+        logger.info(f'Scraped Type: {job_type}')
+
+        job_functions = soup.select_one(".description__job-criteria-list > li:nth-child(3) > span")
+        job_functions = job_functions.get_text().strip() if job_functions else ''
+        logger.info(f'Scraped Job Functions: {job_functions}')
+
+        industries = soup.select_one(".description__job-criteria-list > li:nth-child(4) > span")
+        industries = industries.get_text().strip() if industries else ''
+        logger.info(f'Scraped Industries: {industries}')
+
+        job_description = ''
+        description_container = soup.select_one(".show-more-less-html__markup")
+        if description_container:
+            paragraphs = description_container.find_all(['p', 'li'], recursive=False)
+            if paragraphs:
+                seen = set()
+                unique_paragraphs = []
+                logger.debug(f"Raw paragraphs for {job_title}: {[sanitize_text(p.get_text().strip())[:50] for p in paragraphs if p.get_text().strip()]}")
+                for p in paragraphs:
+                    para = sanitize_text(p.get_text().strip())
+                    if not para:
+                        continue
+                    norm_para = normalize_for_deduplication(para)
+                    if norm_para and norm_para not in seen:
+                        unique_paragraphs.append(para)
+                        seen.add(norm_para)
+                    elif norm_para:
+                        logger.info(f"Removed duplicate paragraph in job description for {job_title}: {para[:50]}...")
+                job_description = '\n\n'.join(unique_paragraphs)
+            else:
+                raw_text = description_container.get_text(separator='\n').strip()
+                paragraphs = [para.strip() for para in raw_text.split('\n\n') if para.strip()]
+                seen = set()
+                unique_paragraphs = []
+                logger.debug(f"Raw text paragraphs for {job_title}: {[sanitize_text(para)[:50] for para in paragraphs]}")
+                for para in paragraphs:
+                    para = sanitize_text(para)
+                    if not para:
+                        continue
+                    norm_para = normalize_for_deduplication(para)
+                    if norm_para and norm_para not in seen:
+                        unique_paragraphs.append(para)
+                        seen.add(norm_para)
+                    elif norm_para:
+                        logger.info(f"Removed duplicate paragraph in job description for {job_title}: {para[:50]}...")
+                job_description = '\n\n'.join(unique_paragraphs)
+            logger.info(f'Raw Job Description (length): {len(job_description)}')
+            job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
+            job_description = split_paragraphs(job_description, max_length=200)
+            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split('\n\n'))}')
+        else:
+            logger.warning(f"No job description container found for {job_title}")
+
+        description_application_info = ''
+        description_application_url = ''
+        if description_container:
+            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+            emails = re.findall(email_pattern, job_description)
+            if emails:
+                description_application_info = emails[0]
+                logger.info(f'Found email in job description: {description_application_info}')
+            else:
+                links = description_container.find_all('a', href=True)
+                for link in links:
+                    href = link['href']
+                    if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
+                        description_application_url = href
+                        description_application_info = href
+                        logger.info(f'Found application link in job description: {description_application_info}')
+                        break
+
+        application_anchor = soup.select_one("#teriary-cta-container > div > a")
+        application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else None
+        logger.info(f'Scraped Application URL: {application_url}')
+
+        resolved_application_info = ''
+        resolved_application_url = ''
+        final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
+        final_application_url = description_application_url if description_application_url else ''
+
+        if application_url:
+            try:
+                time.sleep(5)
+                resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
+                resolved_application_url = resp_app.url
+                logger.info(f'Resolved Application URL: {resolved_application_url}')
+                
+                app_soup = BeautifulSoup(resp_app.text, 'html.parser')
+                email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+                emails = re.findall(email_pattern, resp_app.text)
+                if emails:
+                    resolved_application_info = emails[0]
+                    logger.info(f'Found email in application page: {resolved_application_info}')
+                else:
+                    links = app_soup.find_all('a', href=True)
+                    for link in links:
+                        href = link['href']
+                        if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
+                            resolved_application_info = href
+                            logger.info(f'Found application link in application page: {resolved_application_info}')
+                            break
+
+                if final_application_email and resolved_application_info and '@' in resolved_application_info:
+                    final_application_email = final_application_email if final_application_email == resolved_application_info else final_application_email
+                elif resolved_application_info and '@' in resolved_application_info:
+                    final_application_email = final_application_email or resolved_application_info
+
+                if description_application_url and resolved_application_url:
+                    final_application_url = description_application_url if description_application_url == resolved_application_url else resolved_application_url
+                elif resolved_application_url:
+                    final_application_url = resolved_application_url
+
+            except Exception as e:
+                logger.error(f'Failed to follow application URL redirect: {str(e)}')
+                error_str = str(e)
+                external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
+                if external_url_match:
+                    external_url = external_url_match.group(1)
+                    final_application_url = f"https://{external_url}"
+                    logger.info(f'Extracted external URL from error for application: {final_application_url}')
+                else:
+                    final_application_url = description_application_url if description_application_url else application_url or ''
+                    logger.warning(f'No external URL found in error, using fallback: {final_application_url}')
+
+        company_details = ''
+        company_website_url = ''
+        company_industry = ''
+        company_size = ''
+        company_headquarters = ''
+        company_type = ''
+        company_founded = ''
+        company_specialties = ''
+        company_address = ''
+
+        if company_url:
+            logger.info(f'Fetching company page: {company_url}')
+            try:
+                company_response = session.get(company_url, headers=headers, timeout=15)
+                company_response.raise_for_status()
+                company_soup = BeautifulSoup(company_response.text, 'html.parser')
+
+                company_details_elem = company_soup.select_one("p.about-us__description") or company_soup.select_one("section.core-section-container > div > p")
+                company_details = company_details_elem.get_text().strip() if company_details_elem else ''
+                logger.info(f'Scraped Company Details: {company_details[:100] + "..." if company_details else ""}')
+
+                company_website_anchor = company_soup.select_one("dl > div:nth-child(1) > dd > a")
+                company_website_url = company_website_anchor['href'] if company_website_anchor and company_website_anchor.get('href') else ''
+                logger.info(f'Scraped Company Website URL: {company_website_url}')
+
+                if 'linkedin.com/redir/redirect' in company_website_url:
+                    parsed_url = urlparse(company_website_url)
+                    query_params = parse_qs(parsed_url.query)
+                    if 'url' in query_params:
+                        company_website_url = unquote(query_params['url'][0])
+                        logger.info(f'Extracted external company website from redirect: {company_website_url}')
+                    else:
+                        logger.warning(f'No "url" param in LinkedIn redirect for {company_name}')
+
+                if company_website_url and 'linkedin.com' not in company_website_url:
+                    try:
+                        time.sleep(5)
+                        resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
+                        company_website_url = resp_company_web.url
+                        logger.info(f'Resolved Company Website URL: {company_website_url}')
+                    except Exception as e:
+                        logger.error(f'Failed to resolve company website URL: {str(e)}')
+                        error_str = str(e)
+                        external_url_match = re.search(r'host=\'([^\']+)\'', error_str)
+                        if external_url_match:
+                            external_url = external_url_match.group(1)
+                            company_website_url = f"https://{external_url}"
+                            logger.info(f'Extracted external URL from error for company website: {company_website_url}')
+                        else:
+                            logger.warning(f'No external URL found in error for {company_name}')
+                            company_website_url = ''
+                else:
+                    description_elem = company_soup.select_one("p.about-us__description")
+                    if description_elem:
+                        description_text = description_elem.get_text()
+                        url_pattern = r'https?://(?!www\.linkedin\.com)[^\s]+'
+                        urls = re.findall(url_pattern, description_text)
+                        if urls:
+                            company_website_url = urls[0]
+                            logger.info(f'Found company website in description: {company_website_url}')
+                            try:
+                                time.sleep(5)
+                                resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
+                                company_website_url = resp_company_web.url
+                                logger.info(f'Resolved Company Website URL from description: {company_website_url}')
+                            except Exception as e:
+                                logger.error(f'Failed to resolve company website URL from description: {str(e)}')
+                                company_website_url = ''
+                        else:
+                            logger.warning(f'No valid company website URL found in description for {company_name}')
+                            company_website_url = ''
+                    else:
+                        logger.warning(f'No company description found for {company_name}')
+                        company_website_url = ''
+
+                if company_website_url and 'linkedin.com' in company_website_url:
+                    logger.warning(f'Skipping LinkedIn URL for company website: {company_website_url}')
+                    company_website_url = ''
+
+                def get_company_detail(label):
+                    elements = company_soup.select("section.core-section-container.core-section-container--with-border > div > dl > div")
+                    for elem in elements:
+                        dt = elem.find("dt")
+                        if dt and dt.get_text().strip().lower() == label.lower():
+                            dd = elem.find("dd")
+                            return dd.get_text().strip() if dd else ''
+                    return ''
+
+                company_industry = get_company_detail("Industry")
+                logger.info(f'Scraped Company Industry: {company_industry}')
+
+                company_size = get_company_detail("Company size")
+                logger.info(f'Scraped Company Size: {company_size}')
+
+                company_headquarters = get_company_detail("Headquarters")
+                logger.info(f'Scraped Company Headquarters: {company_headquarters}')
+
+                company_type = get_company_detail("Type")
+                logger.info(f'Scraped Company Type: {company_type}')
+
+                company_founded = get_company_detail("Founded")
+                logger.info(f'Scraped Company Founded: {company_founded}')
+
+                company_specialties = get_company_detail("Specialties")
+                logger.info(f'Scraped Company Specialties: {company_specialties}')
+
+                company_address = company_soup.select_one("#address-0")
+                company_address = company_address.get_text().strip() if company_address else company_headquarters
+                logger.info(f'Scraped Company Address: {company_address}')
+            except Exception as e:
+                logger.error(f'Error fetching company page: {company_url} - {str(e)}')
+        else:
+            logger.info('No company URL, skipping company details scrape')
+
+        row = [
+            job_title,
+            company_logo,
+            company_name,
+            company_url,
+            location,
+            environment,
+            job_type,
+            level,
+            job_functions,
+            industries,
+            job_description,
+            job_url,
+            company_details,
+            company_website_url,
+            company_industry,
+            company_size,
+            company_headquarters,
+            company_type,
+            company_founded,
+            company_specialties,
+            company_address,
+            application_url,
+            description_application_info,
+            resolved_application_info,
+            final_application_email,
+            final_application_url,
+            resolved_application_url
+        ]
+        logger.info(f'Full scraped row for job: {str(row)[:200] + "..."}')
+        return row
+
+    except Exception as e:
+        logger.error(f'Error in scrape_job_details for {job_url}: {str(e)}')
+        return None
 
 def main():
-    auth_string = f"{wp_username}:{wp_app_password}"
+    auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
     auth = base64.b64encode(auth_string.encode()).decode()
     wp_headers = {
         "Authorization": f"Basic {auth}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "X-WP-Nonce": wp_rest_nonce
+        "Content-Type": "application/json"
     }
     
-    # Test authentication only (skip permission test to allow crawling)
-    try:
-        test_response = requests.get(f"{base_url}/wp-json/wp/v2/users/me", headers=wp_headers, timeout=10, verify=True)
-        test_response.raise_for_status()
-        user_data = test_response.json()
-        logger.info(f"Authentication successful for user: {wp_username} (ID: {user_data.get('id')})")
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"Authentication failed: {str(e)}\nResponse: {test_response.text}")
-        scrape_results.append({
-            "type": "system",
-            "job_id": "",
-            "job_title": "",
-            "company_name": "",
-            "post_id": "",
-            "status": "failed",
-            "error": f"Authentication failed: {test_response.text}"
-        })
-        save_results_to_json()
-        return
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Authentication test failed: {str(e)}")
-        scrape_results.append({
-            "type": "system",
-            "job_id": "",
-            "job_title": "",
-            "company_name": "",
-            "post_id": "",
-            "status": "failed",
-            "error": f"Authentication test failed: {str(e)}"
-        })
-        save_results_to_json()
-        return
-    
-    # Proceed with crawling even if permission test would fail
     processed_ids = load_processed_ids()
     crawl(auth_headers=wp_headers, processed_ids=processed_ids)
 
