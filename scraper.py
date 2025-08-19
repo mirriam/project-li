@@ -688,3 +688,4 @@ def main():
     crawl(auth_headers=wp_headers, processed_ids=processed_ids)
 
 if __name__ == "__main__":
+    main()
