@@ -21,11 +21,30 @@ parser.add_argument("--wp-app-password", required=True, help="WordPress applicat
 parser.add_argument("--scrape-location", required=True, help="Location for job scraping (e.g., Worldwide)")
 args = parser.parse_args()
 
-# Get GitHub token from environment (optional, as it may be used by the workflow)
+# Get GitHub token from environment (optional)
 github_token = os.getenv("GITHUB_TOKEN")
 
-# Assign arguments to variables
-base_url = args.wp_base_url
+# Sanitize and validate wp-base-url
+base_url = args.wp_base_url.strip()
+if not base_url:
+    logger.error("wp-base-url is empty")
+    raise ValueError("wp-base-url cannot be empty")
+if not base_url.startswith(('http://', 'https://')):
+    base_url = f"https://{base_url}"
+# Remove trailing slashes and ensure proper format
+base_url = base_url.rstrip('/')
+# Validate URL format
+try:
+    result = urlparse(base_url)
+    if not all([result.scheme, result.netloc]):
+        logger.error(f"Invalid wp-base-url: {base_url}")
+        raise ValueError(f"Invalid wp-base-url: {base_url}. Must be a valid URL (e.g., https://your-site.com)")
+except ValueError as e:
+    logger.error(f"Failed to parse wp-base-url: {str(e)}")
+    raise
+logger.info(f"Using base_url: {base_url}")
+
+# Assign other arguments
 wp_username = args.wp_username
 wp_app_password = args.wp_app_password
 scrape_location = args.scrape_location
@@ -283,7 +302,8 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
         "job_listing_type": [job_type_id] if (job_type_id := get_or_create_term(job_type, "job_type", WP_JOB_TYPE_URL, auth_headers)) else [],
         "job_listing_region": [job_region_id] if (job_region_id := get_or_create_term(location, "job_region", WP_JOB_REGION_URL, auth_headers)) else []
     }
-    
+塞尔
+
     try:
         response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=False)
         response.raise_for_status()
