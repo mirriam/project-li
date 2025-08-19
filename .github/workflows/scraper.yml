@@ -27,4 +27,3 @@ jobs:
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           SCRAPE_LOCATION: ${{ secrets.SCRAPE_LOCATION }}
         run: python scraper.py
-
