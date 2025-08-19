@@ -2,6 +2,16 @@ name: Scraper Workflow
 
 on:
   workflow_dispatch:
+    inputs:
+      wp_username:
+        description: 'WordPress username for REST API authentication'
+        required: true
+      wp_app_password:
+        description: 'WordPress application password for REST API authentication'
+        required: true
+      scrape_location:
+        description: 'Location for job scraping (e.g., Worldwide, New York)'
+        required: true
 
 jobs:
   scrape:
@@ -23,7 +33,8 @@ jobs:
       - name: Run scraper
         env:
           WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
-          WP_USERNAME: ${{ secrets.WP_USERNAME }}
-          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-          SCRAPE_LOCATION: ${{ secrets.SCRAPE_LOCATION }}
+          WP_USERNAME: ${{ github.event.inputs.wp_username }}
+          WP_APP_PASSWORD: ${{ github.event.inputs.wp_app_password }}
+          SCRAPE_LOCATION: ${{ github.event.inputs.scrape_location }}
         run: python scraper.py
+
