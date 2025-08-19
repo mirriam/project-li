@@ -45,4 +45,10 @@ jobs:
             --wp-username "${{ github.event.inputs.wp_username }}" \
             --wp-app-password "${{ github.event.inputs.wp_app_password }}" \
             --scrape-location "${{ github.event.inputs.scrape_location }}" \
-            --wp-rest-nonce "${{ github.event.inputs.wp_rest_nonce }}"
+            --wp-rest-nonce "${{ github.event.inputs.wp_rest_nonce }}" | tee scrape_results.txt
+
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: scraper-results
+          path: scrape_results.json
