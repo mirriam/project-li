@@ -677,7 +677,7 @@ def scrape_job_details(job_url):
         ]
 
 def main():
-    auth_string = f"{wp_username}:{wp_app_password}"
+    auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
     auth = base64.b64encode(auth_string.encode()).decode()
     wp_headers = {
         "Authorization": f"Basic {auth}",
