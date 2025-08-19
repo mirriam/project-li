@@ -21,7 +21,7 @@ headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
 }
 
-# Constants for WordPress
+# Constants for WordPress (not used for posting anymore, but kept for reference)
 WP_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job-listings"
 WP_COMPANY_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/company"
 WP_MEDIA_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/media"
@@ -50,6 +50,8 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
     "Stage": "Internship",
     "Bénévolat": "Volunteer"
 }
+
+JSON_OUTPUT_FILE = "mauritius_jobs_data.json"
 
 def sanitize_text(text, is_url=False):
     if not text:
@@ -95,44 +97,11 @@ def split_paragraphs(text, max_length=200):
             result.append(para)
     return '\n\n'.join(result)
 
-def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
-    term_name = sanitize_text(term_name)
-    if not term_name:
-        return None
-    check_url = f"{wp_url}?search={term_name}"
-    try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
-        response.raise_for_status()
-        terms = response.json()
-        for term in terms:
-            if term['name'].lower() == term_name.lower():
-                return term['id']
-        post_data = {"name": term_name, "slug": term_name.lower().replace(' ', '-')}
-        response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=10, verify=False)
-        response.raise_for_status()
-        term = response.json()
-        logger.info(f"Created new {taxonomy} term: {term_name}, ID: {term['id']}")
-        return term['id']
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to get or create {taxonomy} term {term_name}: {str(e)}")
-        return None
+# Removed get_or_create_term since we're not interacting with WP API anymore
 
-def check_existing_job(job_title, company_name, auth_headers):
-    """Check if a job with the same title and company already exists on WordPress."""
-    check_url = f"{WP_URL}?search={job_title}&meta_key=_company_name&meta_value={company_name}"
-    try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
-        response.raise_for_status()
-        posts = response.json()
-        if posts:
-            logger.info(f"Found existing job on WordPress: {job_title} at {company_name}, Post ID: {posts[0].get('id')}")
-            return posts[0].get('id'), posts[0].get('link')
-        return None, None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to check existing job {job_title} at {company_name}: {str(e)}")
-        return None, None
+# Removed check_existing_job since we're not checking WP anymore
 
-def save_company_to_wordpress(index, company_data, wp_headers):
+def prepare_company_data(index, company_data):
     company_name = company_data.get("company_name", "")
     company_details = company_data.get("company_details", "")
     company_logo = company_data.get("company_logo", "")
@@ -142,44 +111,14 @@ def save_company_to_wordpress(index, company_data, wp_headers):
     company_type = company_data.get("company_type", "")
     company_address = company_data.get("company_address", "")
     
-    # Check if company already exists
-    check_url = f"{WP_COMPANY_URL}?search={company_name}"
-    try:
-        response = requests.get(check_url, headers=wp_headers, timeout=10, verify=False)
-        response.raise_for_status()
-        posts = response.json()
-        if posts:
-            post = posts[0]
-            logger.info(f"Found existing company {company_name}: Post ID {post.get('id')}, URL {post.get('link')}")
-            return post.get("id"), post.get("link")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to check existing company {company_name}: {str(e)}")
-
-    attachment_id = 0
-    if company_logo:
-        try:
-            logo_response = requests.get(company_logo, headers=headers, timeout=10)
-            logo_response.raise_for_status()
-            logo_headers = {
-                "Authorization": wp_headers["Authorization"],
-                "Content-Disposition": f'attachment; filename="{company_name}_logo.jpg"',
-                "Content-Type": logo_response.headers.get("content-type", "image/jpeg")
-            }
-            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, verify=False)
-            media_response.raise_for_status()
-            attachment_id = media_response.json().get("id", 0)
-            logger.info(f"Uploaded logo for {company_name}, Attachment ID: {attachment_id}")
-        except Exception as e:
-            logger.error(f"Failed to upload logo for {company_name}: {str(e)}")
-
     post_data = {
         "title": company_name,
         "content": company_details,
         "status": "publish",
-        "featured_media": attachment_id,
+        "featured_media": company_logo,  # URL instead of ID
         "meta": {
             "_company_name": sanitize_text(company_name),
-            "_company_logo": str(attachment_id) if attachment_id else "",
+            "_company_logo": company_logo,
             "_company_website": sanitize_text(company_website, is_url=True),
             "_company_industry": sanitize_text(company_industry),
             "_company_founded": sanitize_text(company_founded),
@@ -190,55 +129,60 @@ def save_company_to_wordpress(index, company_data, wp_headers):
             "_company_video": ""
         }
     }
-    response = None
-    try:
-        response = requests.post(WP_COMPANY_URL, json=post_data, headers=wp_headers, timeout=15, verify=False)
-        response.raise_for_status()
-        post = response.json()
-        logger.info(f"Successfully posted company {company_name}: Post ID {post.get('id')}, URL {post.get('link')}")
-        return post.get("id"), post.get("link")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to post company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}")
-        return None, None
+    logger.info(f"Prepared company data for {company_name}")
+    return post_data
 
-def save_article_to_json(index, job_data, company_id, auth_headers):
-    """Send scraped job data to WordPress plugin JSON endpoint instead of creating a post."""
-    job_payload = {
-        "job_title": job_data.get("job_title", ""),
-        "job_description": job_data.get("job_description", ""),
-        "job_type": job_data.get("job_type", ""),
-        "location": job_data.get("location", "Mauritius"),
-        "job_url": job_data.get("job_url", ""),
-        "company_name": job_data.get("company_name", ""),
-        "company_logo": job_data.get("company_logo", ""),
-        "job_salary": job_data.get("job_salary", ""),
-        "application": job_data.get("application_url", ""),
-        "company": {
-            "id": company_id,
-            "name": job_data.get("company_name", ""),
-            "website": job_data.get("company_website_url", ""),
-            "industry": job_data.get("company_industry", ""),
-            "founded": job_data.get("company_founded", ""),
-            "address": job_data.get("company_address", "")
-        }
+def prepare_job_data(index, job_data, company_data):
+    job_title = job_data.get("job_title", "")
+    job_description = job_data.get("job_description", "")
+    job_type = job_data.get("job_type", "")
+    location = job_data.get("location", "Mauritius")
+    job_url = job_data.get("job_url", "")
+    company_name = job_data.get("company_name", "")
+    company_logo = job_data.get("company_logo", "")
+    environment = job_data.get("environment", "").lower()
+    job_salary = job_data.get("job_salary", "")
+    company_industry = job_data.get("company_industry", "")
+    company_founded = job_data.get("company_founded", "")
+    
+    application = ''
+    if '@' in job_data.get("description_application_info", ""):
+        application = job_data.get("description_application_info", "")
+    elif job_data.get("resolved_application_url", ""):
+        application = job_data.get("resolved_application_url", "")
+    else:
+        application = job_data.get("application_url", "")
+        if not application:
+            logger.warning(f"No valid application email or URL found for job {job_title}")
+
+    post_data = {
+        "title": sanitize_text(job_title),
+        "content": job_description,
+        "status": "publish",
+        "featured_media": company_logo,  # URL instead of ID
+        "meta": {
+            "_job_title": sanitize_text(job_title),
+            "_job_location": sanitize_text(location),
+            "_job_type": sanitize_text(job_type),
+            "_job_description": job_description,
+            "_job_salary": sanitize_text(job_salary),
+            "_application": sanitize_text(application, is_url=('@' not in application)),
+            "_company_name": sanitize_text(company_name),
+            "_company_website": sanitize_text(job_data.get("company_website_url", ""), is_url=True),
+            "_company_logo": company_logo,
+            "_company_tagline": sanitize_text(job_data.get("company_details", "")),
+            "_company_address": sanitize_text(job_data.get("company_address", "")),
+            "_company_industry": sanitize_text(company_industry),
+            "_company_founded": sanitize_text(company_founded),
+            "_company_twitter": "",
+            "_company_video": ""
+        },
+        "job_listing_type": job_type,
+        "job_listing_region": location
     }
-
-    try:
-        response = requests.post(
-            "https://mauritius.mimusjobs.com/wp-json/mimusjobs/v1/add",
-            headers=auth_headers,
-            json=job_payload,
-            timeout=15,
-            verify=False
-        )
-        response.raise_for_status()
-        result = response.json()
-        logger.info(f"Job sent to plugin JSON store: {job_payload['job_title']} at {job_payload['company_name']}")
-        return result.get("status"), result.get("message")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to send job to JSON plugin: {str(e)}")
-        return None, None
-
+    
+    logger.info(f"Prepared job data for {job_title}")
+    return post_data
 
 def load_processed_ids():
     """Load processed job IDs from file."""
@@ -282,11 +226,12 @@ def save_last_page(page):
     except Exception as e:
         logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
 
-def crawl(auth_headers, processed_ids):
+def crawl(processed_ids):
     success_count = 0
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
+    all_data = {"companies": {}, "jobs": []}  # companies as dict for uniqueness by name, jobs as list
     
     for i in range(start_page, 15):  # Adjust range to continue from last page
         url = f'https://www.linkedin.com/jobs/search?keywords=&location=Mauritius&start={i * 25}'
@@ -366,19 +311,20 @@ def crawl(auth_headers, processed_ids):
                 
                 total_jobs += 1
                 
-                company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
-                status, message = save_article_to_json(index, job_dict, company_id, auth_headers)
-
+                # Prepare company data if not already present
+                if company_name not in all_data["companies"]:
+                    company_post_data = prepare_company_data(index, job_dict)
+                    all_data["companies"][company_name] = company_post_data
                 
-                if job_post_id:
-                    processed_ids.add(job_id)
-                    save_processed_id(job_id)
-                    logger.info(f"Processed and saved job: {job_id} - {job_title} at {company_name}")
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) successfully posted to WordPress. Post ID: {job_post_id}, URL {job_post_url}")
-                    success_count += 1
-                else:
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post to WordPress. Check logs for details.")
-                    failure_count += 1
+                # Prepare job data
+                job_post_data = prepare_job_data(index, job_dict, all_data["companies"][company_name])
+                all_data["jobs"].append(job_post_data)
+                
+                processed_ids.add(job_id)
+                save_processed_id(job_id)
+                logger.info(f"Processed and added job to JSON data: {job_id} - {job_title} at {company_name}")
+                print(f"Job '{job_title}' at {company_name} (ID: {job_id}) added to JSON data.")
+                success_count += 1
             
             # Save the current page as the last processed page
             save_last_page(i)
@@ -387,10 +333,19 @@ def crawl(auth_headers, processed_ids):
             logger.error(f'Error fetching job search page: {url} - {str(e)}')
             failure_count += 1
     
+    # Save all data to JSON file
+    try:
+        with open(JSON_OUTPUT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(all_data, f, indent=4, ensure_ascii=False)
+        logger.info(f"Saved all scraped data to {JSON_OUTPUT_FILE}")
+        print(f"All data saved to {JSON_OUTPUT_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to save data to {JSON_OUTPUT_FILE}: {str(e)}")
+    
     print("\n--- Summary ---")
     print(f"Total jobs processed: {total_jobs}")
-    print(f"Successfully posted: {success_count}")
-    print(f"Failed to post or scrape: {failure_count}")
+    print(f"Successfully added to JSON: {success_count}")
+    print(f"Failed to scrape: {failure_count}")
 
 def scrape_job_details(job_url):
     logger.info(f'Fetching job details from: {job_url}')
@@ -719,15 +674,9 @@ def scrape_job_details(job_url):
         return None
 
 def main():
-    auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
-    auth = base64.b64encode(auth_string.encode()).decode()
-    wp_headers = {
-        "Authorization": f"Basic {auth}",
-        "Content-Type": "application/json"
-    }
-    
+    # Removed auth_headers since not posting to WP
     processed_ids = load_processed_ids()
-    crawl(auth_headers=wp_headers, processed_ids=processed_ids)
+    crawl(processed_ids=processed_ids)
 
 if __name__ == "__main__":
-    main() 
+    main()
