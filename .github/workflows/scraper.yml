@@ -1,13 +1,14 @@
  name: Scraper Workflow
-     on:
-       workflow_dispatch:
-         inputs:
-           wp_base_url:
-           wp_username:
-           wp_app_password:
-           scrape_location:
-           wp_rest_nonce:
-     jobs:
+ on:
+  workflow_dispatch:
+    inputs:
+          wp_base_url:
+          wp_username:
+          wp_app_password:
+          scrape_location:
+          wp_rest_nonce:
+           
+ jobs:
        run-scraper:
          runs-on: ubuntu-latest
          steps:
