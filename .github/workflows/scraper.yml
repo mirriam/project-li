@@ -1,35 +1,25 @@
- name: Scraper Workflow
- on:
-  workflow_dispatch:
-    inputs:
-          wp_base_url:
-          wp_username:
-          wp_app_password:
-          scrape_location:
-          wp_rest_nonce:
-           
- jobs:
-       run-scraper:
-         runs-on: ubuntu-latest
-         steps:
-           - uses: actions/checkout@v4
-           - name: Set up Python
-             uses: actions/setup-python@v5
-             with:
-               python-version: '3.x'
-           - name: Install dependencies
-             run: pip install requests beautifulsoup4
-           - name: Run scraper
-             env:
-               WP_BASE_URL: ${{ inputs.wp_base_url }}
-               WP_USERNAME: ${{ inputs.wp_username }}
-               WP_APP_PASSWORD: ${{ inputs.wp_app_password }}
-               SCRAPE_LOCATION: ${{ inputs.scrape_location }}
-               WP_REST_NONCE: ${{ inputs.wp_rest_nonce }}
-               GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-             run: python scraper.py --wp-base-url "$WP_BASE_URL" --wp-username "$WP_USERNAME" --wp-app-password "$WP_APP_PASSWORD" --scrape-location "$SCRAPE_LOCATION" --wp-rest-nonce "$WP_REST_NONCE"
-           - name: Upload results
-             uses: actions/upload-artifact@v4
-             with:
-               name: scraper-results
-               path: scrape_results.json
+name: Job Scraper
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # Runs every day at 8:00 UTC
+  workflow_dispatch:  # Allows manual trigger
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4 lxml
+
+      - name: Run scraper
+        run: python scraper.py  # Replace with your script filename if different
