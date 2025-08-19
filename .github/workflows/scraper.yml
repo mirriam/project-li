@@ -1,41 +1,31 @@
-name: Mauritius Jobs Scraper
+```yaml
+name: Scraper Workflow
 
 on:
-  schedule:
-    - cron: '0 2 * * *'  # Runs daily at 2:00 AM UTC
-  workflow_dispatch:  # Allows manual triggering
+  workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.9'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install requests beautifulsoup4 urllib3
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 urllib3
 
-    - name: Run scraper
-      run: python scraper.py
-
-    - name: Upload JSON artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: mauritius_jobs_data
-        path: mauritius_jobs_data.json
-
-    - name: Commit processed IDs and last page
-      run: |
-        git config --global user.name "GitHub Action"
-        git config --global user.email "action@github.com"
-        git add mauritius_processed_job_ids.csv last_processed_page.txt
-        git commit -m "Update processed IDs and last page" || echo "No changes to commit"
-        git push
+      - name: Run scraper
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          SCRAPE_LOCATION: ${{ secrets.SCRAPE_LOCATION }}
+        run: python scraper.py
+```
