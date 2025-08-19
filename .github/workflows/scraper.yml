@@ -3,9 +3,6 @@ name: Scraper Workflow
 on:
   workflow_dispatch:
     inputs:
-      wp_base_url:
-        description: 'WordPress Base URL (e.g., https://your-site.com)'
-        required: true
       wp_username:
         description: 'WordPress username for REST API authentication'
         required: true
@@ -42,4 +39,4 @@ jobs:
             --wp-app-password "${{ github.event.client_payload.wp_app_password || github.event.inputs.wp_app_password }}" \
             --scrape-location "${{ github.event.client_payload.scrape_location || github.event.inputs.scrape_location }}"
           run: python scraper.py
-       
+        
