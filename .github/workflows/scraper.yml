@@ -1,39 +1,41 @@
-name: Job Scraper
+name: Mauritius Jobs Scraper
 
 on:
-  workflow_dispatch:   # allow manual trigger
   schedule:
-    - cron: "0 * * * *"   # runs every hour (you can adjust/remove if you want looping only)
+    - cron: '0 2 * * *'  # Runs daily at 2:00 AM UTC
+  workflow_dispatch:  # Allows manual triggering
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.9'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests beautifulsoup4 urllib3
 
-      - name: Run scraper
-        run: |
-          echo "🚀 Starting job scraper..."
-          python scraper.py || exit 1
-          echo "✅ Scraper finished, waiting 5 minutes..."
-          sleep 300  # wait 5 minutes
-          echo "🔄 Restarting workflow..."
-          gh workflow run scraper.yml
-        env:
-          WP_USER: ${{ secrets.WP_USER }}
-          WP_PASS: ${{ secrets.WP_PASS }}
-          WP_URL:  ${{ secrets.WP_URL }}
+    - name: Run scraper
+      run: python scraper.py
 
-      - name: Done
-        run: echo "Scraper loop complete."
+    - name: Upload JSON artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: mauritius_jobs_data
+        path: mauritius_jobs_data.json
+
+    - name: Commit processed IDs and last page
+      run: |
+        git config --global user.name "GitHub Action"
+        git config --global user.email "action@github.com"
+        git add mauritius_processed_job_ids.csv last_processed_page.txt
+        git commit -m "Update processed IDs and last page" || echo "No changes to commit"
+        git push
