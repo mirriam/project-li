@@ -3,6 +3,9 @@ name: Scraper Workflow
 on:
   workflow_dispatch:
     inputs:
+      wp_base_url:
+        description: 'WordPress Base URL (e.g., https://your-site.com)'
+        required: true
       wp_username:
         description: 'WordPress username for REST API authentication'
         required: true
@@ -12,9 +15,7 @@ on:
       scrape_location:
         description: 'Location for job scraping (e.g., Worldwide, New York)'
         required: true
-      wp_base_url:
-        description: 'WordPress Base URL (e.g., https://your-site.com)'
-        required: true
+     
 
 jobs:
   scrape:
