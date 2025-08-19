@@ -1,6 +1,7 @@
 name: Scraper Workflow
-
 on:
+  repository_dispatch:
+    types: [run-scraper]
   workflow_dispatch:
     inputs:
       wp_base_url:
@@ -15,23 +16,33 @@ on:
       scrape_location:
         description: 'Location for job scraping (e.g., Worldwide, New York)'
         required: true
-
 jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-
+        uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-
+          python-version: '3.12'
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 urllib3
+      - name: Validate inputs
+        run: |
+          echo "wp_base_url: ${{ github.event.client_payload.wp_base_url || github.event.inputs.wp_base_url }}"
+          echo "wp_username: ${{ github.event.client_payload.wp_username || github.event.inputs.wp_username }}"
+          echo "scrape_location: ${{ github.event.client_payload.scrape_location || github.event.inputs.scrape_location }}"
+          if [[ -z "${{ github.event.client_payload.wp_base_url || github.event.inputs.wp_base_url }}" ]]; then
+            echo "Error: wp_base_url is empty"
+            exit 1
+          fi
+          if ! echo "${{ github.event.client_payload.wp_base_url || github.event.inputs.wp_base_url }}" | grep -E '^https?://'; then
+            echo "Error: wp_base_url must start with http:// or https://"
+            exit 1
+          fi
       - name: Run scraper
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -41,5 +52,5 @@ jobs:
             --wp-username "${{ github.event.client_payload.wp_username || github.event.inputs.wp_username }}" \
             --wp-app-password "${{ github.event.client_payload.wp_app_password || github.event.inputs.wp_app_password }}" \
             --scrape-location "${{ github.event.client_payload.scrape_location || github.event.inputs.scrape_location }}"
-          run: python scraper.py
+
         
