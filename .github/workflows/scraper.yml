@@ -1,40 +1,41 @@
-name: Scraper Workflow
-
+name: Run Scraper
 on:
+  repository_dispatch:
+    types: [run-scraper]
   workflow_dispatch:
     inputs:
+      wp_base_url:
+        description: 'WordPress Base URL'
+        required: true
       wp_username:
-        description: 'WordPress username for REST API authentication'
+        description: 'WordPress Username'
         required: true
       wp_app_password:
-        description: 'WordPress application password for REST API authentication'
+        description: 'WordPress Application Password'
         required: true
       scrape_location:
-        description: 'Location for job scraping (e.g., Worldwide, New York)'
+        description: 'Scrape Location'
         required: true
-
 jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-
+        uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-
+          python-version: '3.12'
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 urllib3
-
       - name: Run scraper
         env:
-          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
-          WP_USERNAME: ${{ github.event.inputs.wp_username }}
-          WP_APP_PASSWORD: ${{ github.event.inputs.wp_app_password }}
-          SCRAPE_LOCATION: ${{ github.event.inputs.scrape_location }}
-        run: python scraper.py
-
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scraper.py \
+            --wp-base-url "${{ github.event.client_payload.wp_base_url || github.event.inputs.wp_base_url }}" \
+            --wp-username "${{ github.event.client_payload.wp_username || github.event.inputs.wp_username }}" \
+            --wp-app-password "${{ github.event.client_payload.wp_app_password || github.event.inputs.wp_app_password }}" \
+            --scrape-location "${{ github.event.client_payload.scrape_location || github.event.inputs.scrape_location }}"
