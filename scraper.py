@@ -11,16 +11,24 @@ import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
+import argparse
 
-# Use environment variables set by GitHub Actions workflow inputs
-base_url = os.getenv("WP_BASE_URL")
-wp_username = os.getenv("WP_USERNAME")
-wp_app_password = os.getenv("WP_APP_PASSWORD")
-scrape_location = os.getenv("SCRAPE_LOCATION")
+# Configure command-line arguments
+parser = argparse.ArgumentParser(description="LinkedIn job scraper for WordPress")
+parser.add_argument("--wp-base-url", required=True, help="WordPress base URL (e.g., https://your-site.com)")
+parser.add_argument("--wp-username", required=True, help="WordPress username for API authentication")
+parser.add_argument("--wp-app-password", required=True, help="WordPress application password for API authentication")
+parser.add_argument("--scrape-location", required=True, help="Location for job scraping (e.g., Worldwide)")
+args = parser.parse_args()
 
-# Validate environment variables
-if not all([base_url, wp_username, wp_app_password, scrape_location]):
-    raise ValueError("Missing required environment variables: WP_BASE_URL, WP_USERNAME, WP_APP_PASSWORD, or SCRAPE_LOCATION")
+# Get GitHub token from environment (optional, as it may be used by the workflow)
+github_token = os.getenv("GITHUB_TOKEN")
+
+# Assign arguments to variables
+base_url = args.wp_base_url
+wp_username = args.wp_username
+wp_app_password = args.wp_app_password
+scrape_location = args.scrape_location
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -692,4 +700,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
