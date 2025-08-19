@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 import logging
 import time
 import re
-from urllib.parse import urljoin, urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote
 import base64
 import json
 import hashlib
@@ -12,10 +12,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
 
-base_url = "%%base_url%%"
-wp_username = "%%wp_username%%"
-wp_app_password = "%%wp_app_password%%"
-scrape_location = "%%scrape_location%%"
+base_url = "${{ secrets.WP_BASE_URL }}"
+wp_username = "${{ secrets.WP_USERNAME }}"
+wp_app_password = "${{ secrets.WP_APP_PASSWORD }}"
+scrape_location = "${{ secrets.SCRAPE_LOCATION }}"
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -126,10 +126,10 @@ def check_existing_entry(title, scraped_type, company_name, auth_headers):
             meta = post.get('meta', {})
             if meta.get('_scraped_type') == scraped_type and meta.get('_company_name') == company_name:
                 if scraped_type == 'job' and meta.get('_job_title') == title:
-                    logger.info(f"Found existing {scraped_type} {title}: Post ID {post.get('id')}, URL {post.get('link')}")
+                    logger.info(f"Found existing {scraped_type} {title}: Post ID {post.get('id')}")
                     return post.get('id'), post.get('link')
                 elif scraped_type == 'company':
-                    logger.info(f"Found existing {scraped_type} {title}: Post ID {post.get('id')}, URL {post.get('link')}")
+                    logger.info(f"Found existing {scraped_type} {title}: Post ID {post.get('id')}")
                     return post.get('id'), post.get('link')
         return None, None
     except requests.exceptions.RequestException as e:
@@ -149,7 +149,7 @@ def save_company_to_wordpress(index, company_data, auth_headers):
     existing_id, existing_url = check_existing_entry(company_name, 'company', company_name, auth_headers)
     if existing_id:
         logger.info(f"Skipping duplicate company: {company_name}, Post ID: {existing_id}")
-        print(f"Company '{company_name}' skipped - already posted. Post ID: {existing_id}, URL: {existing_url}")
+        print(f"Company '{company_name}' skipped - already posted. Post ID: {existing_id}")
         return existing_id, existing_url
 
     attachment_id = 0
@@ -192,7 +192,7 @@ def save_company_to_wordpress(index, company_data, auth_headers):
         response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=False)
         response.raise_for_status()
         post = response.json()
-        logger.info(f"Successfully posted company {company_name}: Post ID {post.get('id')}, URL {post.get('link')}")
+        logger.info(f"Successfully posted company {company_name}: Post ID {post.get('id')}")
         return post.get("id"), post.get("link")
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to post company {company_name}: {str(e)}")
@@ -213,7 +213,7 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
     existing_id, existing_url = check_existing_entry(job_title, 'job', company_name, auth_headers)
     if existing_id:
         logger.info(f"Skipping duplicate job: {job_title} at {company_name}, Post ID: {existing_id}")
-        print(f"Job '{job_title}' at {company_name} skipped - already posted. Post ID: {existing_id}, URL: {existing_url}")
+        print(f"Job '{job_title}' at {company_name} skipped - already posted. Post ID: {existing_id}")
         return existing_id, existing_url
 
     application = ''
@@ -275,7 +275,7 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
         response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=False)
         response.raise_for_status()
         post = response.json()
-        logger.info(f"Successfully posted job {job_title}: Post ID {post.get('id')}, URL {post.get('link')}")
+        logger.info(f"Successfully posted job {job_title}: Post ID {post.get('id')}")
         return post.get("id"), post.get("link")
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to post job {job_title}: {str(e)}")
@@ -412,7 +412,7 @@ def crawl(auth_headers, processed_ids):
                     processed_ids.add(job_id)
                     save_processed_id(job_id)
                     logger.info(f"Processed job: {job_id} - {job_title} at {company_name}")
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) posted. Post ID: {job_post_id}, URL: {job_post_url}")
+                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) posted. Post ID: {job_post_id}")
                     success_count += 1
                 else:
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post")
