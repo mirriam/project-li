@@ -1,892 +1,702 @@
-import requests
-from bs4 import BeautifulSoup
-import logging
-import time
-import re
-from urllib.parse import urlparse, parse_qs, unquote
-import base64
-import json
-import hashlib
-import random
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-import os
-import argparse
+<?php
+/**
+ * Plugin Name: Scraped Data Staging
+ * Plugin URI: https://example.com/scraped-data-staging
+ * Description: A WordPress plugin to stage scraped company and job data from a GitHub-hosted scraper script in a single post type for review before publishing. Settings are managed under the plugin menu, manual post creation is disabled, and GitHub authentication uses only a personal access token with a hidden repository. Displays scraper results in a table after running.
+ * Version: 1.6.6
+ * Author: Grok
+ * Author URI: https://x.ai
+ * License: GPL-2.0+
+ * Text Domain: scraped-data-staging
+ */
 
-# Configure command-line arguments
-parser = argparse.ArgumentParser(description="LinkedIn job scraper for WordPress")
-parser.add_argument("--wp-base-url", required=True, help="WordPress base URL (e.g., https://your-site.com)")
-parser.add_argument("--wp-username", required=True, help="WordPress username for API authentication")
-parser.add_argument("--wp-app-password", required=True, help="WordPress application password for API authentication")
-parser.add_argument("--scrape-location", required=True, help="Location for job scraping (e.g., Worldwide)")
-parser.add_argument("--wp-rest-nonce", required=True, help="WordPress REST API nonce")
-args = parser.parse_args()
-
-# Get GitHub token from environment (optional)
-github_token = os.getenv("GITHUB_TOKEN")
-
-# Assign arguments to variables
-base_url = args.wp_base_url.rstrip('/')
-wp_username = args.wp_username
-wp_app_password = args.wp_app_password
-scrape_location = args.scrape_location
-wp_rest_nonce = args.wp_rest_nonce
-
-# Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Initialize results list for JSON output
-scrape_results = []
-
-# HTTP headers for scraping
-headers = {
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
+if ( ! defined( 'ABSPATH' ) ) {
+    exit; // Prevent direct access.
 }
 
-# Constants for WordPress
-WP_URL = f"{base_url}/wp-json/wp/v2/staging-scraped"
-WP_MEDIA_URL = f"{base_url}/wp-json/wp/v2/media"
-WP_JOB_TYPE_URL = f"{base_url}/wp-json/wp/v2/job_listing_type"
-WP_JOB_REGION_URL = f"{base_url}/wp-json/wp/v2/job_listing_region"
-PROCESSED_IDS_FILE = "processed_job_ids.csv"
-LAST_PAGE_FILE = "last_processed_page.txt"
-JOB_TYPE_MAPPING = {
-    "Full-time": "full-time",
-    "Part-time": "part-time",
-    "Contract": "contract",
-    "Temporary": "temporary",
-    "Freelance": "freelance",
-    "Internship": "internship",
-    "Volunteer": "volunteer"
-}
+/**
+ * Class to manage the Scraped Data Staging plugin.
+ */
+class Scraped_Data_Staging {
+    /**
+     * Hardcoded GitHub repository.
+     */
+    private static $github_repo = 'mirriam/project-li';
 
-FRENCH_TO_ENGLISH_JOB_TYPE = {
-    "Temps plein": "Full-time",
-    "Temps partiel": "Part-time",
-    "Contrat": "Contract",
-    "Temporaire": "Temporary",
-    "Indépendant": "Freelance",
-    "Stage": "Internship",
-    "Bénévolat": "Volunteer"
-}
-
-def sanitize_text(text, is_url=False):
-    if not text:
-        return ''
-    if is_url:
-        text = text.strip()
-        if not text.startswith(('http://', 'https://')):
-            text = 'https://' + text
-        return text
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'(\w)\.(\w)', r'\1. \2', text)
-    text = re.sub(r'(\w)(\w)', r'\1 \2', text) if re.match(r'^\w+$', text) else text
-    return ' '.join(text.split())
-
-def normalize_for_deduplication(text):
-    text = re.sub(r'[^\w\s]', '', text)
-    text = re.sub(r'\s+', '', text)
-    return text.lower()
-
-def generate_job_id(job_title, company_name):
-    combined = f"{job_title}_{company_name}"
-    return hashlib.md5(combined.encode()).hexdigest()[:16]
-
-def split_paragraphs(text, max_length=200):
-    paragraphs = text.split('\n\n')
-    result = []
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
-        while len(para) > max_length:
-            split_point = para.rfind(' ', 0, max_length)
-            if split_point == -1:
-                split_point = para.rfind('.', 0, max_length)
-            if split_point == -1:
-                split_point = max_length
-            result.append(para[:split_point].strip())
-            para = para[split_point:].strip()
-        if para:
-            result.append(para)
-    return '\n\n'.join(result)
-
-def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
-    term_name = sanitize_text(term_name)
-    if not term_name:
-        return None
-    check_url = f"{wp_url}?search={term_name}"
-    try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=True)
-        response.raise_for_status()
-        terms = response.json()
-        for term in terms:
-            if term['name'].lower() == term_name.lower():
-                return term['id']
-        post_data = {"name": term_name, "slug": term_name.lower().replace(' ', '-')}
-        response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=10, verify=True)
-        response.raise_for_status()
-        term = response.json()
-        logger.info(f"Created new {taxonomy} term: {term_name}, ID: {term['id']}")
-        return term['id']
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to get or create {taxonomy} term {term_name}: {str(e)}")
-        return None
-
-def check_existing_entry(title, scraped_type, company_name, auth_headers):
-    check_url = f"{WP_URL}?search={title}&_fields=id,link,meta&context=view"
-    try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=True)
-        response.raise_for_status()
-        posts = response.json()
-        for post in posts:
-            meta = post.get('meta', {})
-            if meta.get('_scraped_type') == scraped_type and meta.get('_company_name') == company_name:
-                if scraped_type == 'job' and meta.get('_job_title') == title:
-                    logger.info(f"Found existing {scraped_type} {title}: Post ID {post.get('id')}")
-                    return post.get('id'), post.get('link')
-                elif scraped_type == 'company':
-                    logger.info(f"Found existing {scraped_type} {title}: Post ID {post.get('id')}")
-                    return post.get('id'), post.get('link')
-        return None, None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to check existing {scraped_type} {title}: {str(e)}")
-        return None, None
-
-def save_company_to_wordpress(index, company_data, auth_headers):
-    company_name = company_data.get("company_name", "")
-    company_details = company_data.get("company_details", "")
-    company_logo = company_data.get("company_logo", "")
-    company_website = company_data.get("company_website_url", "")
-    company_industry = company_data.get("company_industry", "")
-    company_founded = company_data.get("company_founded", "")
-    company_type = company_data.get("company_type", "")
-    company_address = company_data.get("company_address", "")
-    
-    result = {
-        "type": "company",
-        "job_id": "",
-        "job_title": "",
-        "company_name": company_name,
-        "post_id": "",
-        "status": "",
-        "error": ""
+    /**
+     * Initialize the plugin.
+     */
+    public static function init() {
+        add_action( 'init', array( __CLASS__, 'register_post_type' ) );
+        add_action( 'init', array( __CLASS__, 'register_meta' ) );
+        add_action( 'add_meta_boxes', array( __CLASS__, 'add_approve_meta_box' ) );
+        add_action( 'save_post', array( __CLASS__, 'handle_approval' ) );
+        add_filter( 'manage_staging_scraped_posts_columns', array( __CLASS__, 'add_admin_columns' ) );
+        add_action( 'manage_staging_scraped_posts_custom_column', array( __CLASS__, 'populate_admin_columns' ), 10, 2 );
+        add_action( 'admin_menu', array( __CLASS__, 'add_settings_page' ) );
+        add_action( 'admin_init', array( __CLASS__, 'register_settings' ) );
+        add_action( 'admin_post_sds_trigger_scraper', array( __CLASS__, 'trigger_scraper' ) );
+        add_action( 'admin_post_sds_refresh_results', array( __CLASS__, 'refresh_results' ) );
     }
 
-    existing_id, existing_url = check_existing_entry(company_name, 'company', company_name, auth_headers)
-    if existing_id:
-        logger.info(f"Skipping duplicate company: {company_name}, Post ID: {existing_id}")
-        result.update({
-            "post_id": str(existing_id),
-            "status": "skipped",
-            "error": "Duplicate company"
-        })
-        scrape_results.append(result)
-        print(f"Company '{company_name}' skipped - already posted. Post ID: {existing_id}")
-        return existing_id, existing_url
+    /**
+     * Register the unified staging post type.
+     */
+    public static function register_post_type() {
+        register_post_type( 'staging_scraped', array(
+            'labels' => array(
+                'name' => __( 'Staging Scraped Data', 'scraped-data-staging' ),
+                'singular_name' => __( 'Staging Scraped Item', 'scraped-data-staging' ),
+                'menu_name' => __( 'Staging Scraped Data', 'scraped-data-staging' ),
+                'all_items' => __( 'All Scraped Data', 'scraped-data-staging' ),
+                'edit_item' => __( 'Edit Scraped Item', 'scraped-data-staging' ),
+                'view_item' => __( 'View Scraped Item', 'scraped-data-staging' ),
+                'search_items' => __( 'Search Scraped Data', 'scraped-data-staging' ),
+            ),
+            'public' => false,
+            'show_ui' => true,
+            'show_in_menu' => true,
+            'supports' => array( 'title', 'editor', 'thumbnail' ),
+            'show_in_rest' => true,
+            'rest_base' => 'staging-scraped',
+            'capability_type' => 'post',
+            'map_meta_cap' => true,
+            'capabilities' => array(
+                'create_posts' => 'do_not_allow',
+            ),
+            'taxonomies' => array( 'job_listing_type', 'job_listing_region' ),
+            'menu_icon' => 'dashicons-database-import',
+        ) );
+    }
 
-    attachment_id = 0
-    if company_logo:
-        try:
-            logo_response = requests.get(company_logo, headers=headers, timeout=10, verify=True)
-            logo_response.raise_for_status()
-            logo_headers = {
-                "Authorization": auth_headers["Authorization"],
-                "Content-Disposition": f'attachment; filename="{company_name}_logo.jpg"',
-                "Content-Type": logo_response.headers.get("content-type", "image/jpeg"),
-                "X-WP-Nonce": auth_headers["X-WP-Nonce"]
-            }
-            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, timeout=10, verify=True)
-            media_response.raise_for_status()
-            attachment_id = media_response.json().get("id", 0)
-            logger.info(f"Uploaded logo for {company_name}, Attachment ID: {attachment_id}")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to upload logo for {company_name}: {str(e)}")
-            result["error"] = f"Logo upload failed: {str(e)}"
-            scrape_results.append(result)
-
-    post_data = {
-        "title": company_name,
-        "content": company_details,
-        "status": "publish",
-        "featured_media": attachment_id,
-        "meta": {
-            "_scraped_type": "company",
-            "_company_name": sanitize_text(company_name),
-            "_company_logo": str(attachment_id) if attachment_id else "",
-            "_company_website": sanitize_text(company_website, is_url=True),
-            "_company_industry": sanitize_text(company_industry),
-            "_company_founded": sanitize_text(company_founded),
-            "_company_type": sanitize_text(company_type),
-            "_company_address": sanitize_text(company_address),
-            "_company_tagline": sanitize_text(company_details),
-            "_company_twitter": "",
-            "_company_video": ""
+    /**
+     * Register meta fields for the staging post type.
+     */
+    public static function register_meta() {
+        $meta_keys = self::get_all_meta_keys();
+        foreach ( $meta_keys as $key ) {
+            register_post_meta( 'staging_scraped', $key, array(
+                'type' => 'string',
+                'single' => true,
+                'show_in_rest' => true,
+                'sanitize_callback' => 'sanitize_text_field',
+                'auth_callback' => function() {
+                    return current_user_can( 'edit_posts' );
+                },
+            ) );
         }
     }
-    logger.debug(f"Company post data for {company_name}: {json.dumps(post_data, indent=2)}")
-    try:
-        response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=True)
-        response.raise_for_status()
-        post = response.json()
-        result.update({
-            "post_id": str(post.get("id")),
-            "status": "success"
-        })
-        logger.info(f"Successfully posted company {company_name}: Post ID {post.get('id')}")
-        scrape_results.append(result)
-        return post.get("id"), post.get("link")
-    except requests.exceptions.HTTPError as e:
-        error_message = f"Failed to post company {company_name}: {str(e)}"
-        if response.status_code == 403:
-            error_message += f"\n403 Forbidden details: {response.text}"
-        logger.error(error_message)
-        result.update({
-            "status": "failed",
-            "error": error_message
-        })
-        scrape_results.append(result)
-        return None, None
-    except requests.exceptions.RequestException as e:
-        error_message = f"Failed to post company {company_name}: {str(e)}"
-        logger.error(error_message)
-        result.update({
-            "status": "failed",
-            "error": error_message
-        })
-        scrape_results.append(result)
-        return None, None
 
-def save_job_to_wordpress(index, job_data, company_id, auth_headers):
-    job_title = job_data.get("job_title", "")
-    job_description = job_data.get("job_description", "")
-    job_type = job_data.get("job_type", "")
-    location = job_data.get("location", scrape_location)
-    company_name = job_data.get("company_name", "")
-    company_logo = job_data.get("company_logo", "")
-    environment = job_data.get("environment", "").lower()
-    job_salary = job_data.get("job_salary", "")
-    company_industry = job_data.get("company_industry", "")
-    company_founded = job_data.get("company_founded", "")
-    
-    job_id = generate_job_id(job_title, company_name)
-    result = {
-        "type": "job",
-        "job_id": job_id,
-        "job_title": job_title,
-        "company_name": company_name,
-        "post_id": "",
-        "status": "",
-        "error": ""
+    /**
+     * Get all unique meta keys for company and job.
+     */
+    private static function get_all_meta_keys() {
+        return array(
+            '_scraped_type',
+            '_company_name',
+            '_company_logo',
+            '_company_website',
+            '_company_industry',
+            '_company_founded',
+            '_company_type',
+            '_company_address',
+            '_company_tagline',
+            '_company_twitter',
+            '_company_video',
+            '_job_title',
+            '_job_location',
+            '_job_type',
+            '_job_description',
+            '_job_salary',
+            '_application',
+            '_company_id',
+        );
     }
 
-    existing_id, existing_url = check_existing_entry(job_title, 'job', company_name, auth_headers)
-    if existing_id:
-        logger.info(f"Skipping duplicate job: {job_title} at {company_name}, Post ID: {existing_id}")
-        result.update({
-            "post_id": str(existing_id),
-            "status": "skipped",
-            "error": "Duplicate job"
-        })
-        scrape_results.append(result)
-        print(f"Job '{job_title}' at {company_name} skipped - already posted. Post ID: {existing_id}")
-        return existing_id, existing_url
-
-    application = ''
-    if '@' in job_data.get("description_application_info", ""):
-        application = job_data.get("description_application_info", "")
-    elif job_data.get("resolved_application_url", ""):
-        application = job_data.get("resolved_application_url", "")
-    else:
-        application = job_data.get("application_url", "")
-        if not application:
-            logger.warning(f"No valid application email or URL found for job {job_title}")
-
-    attachment_id = 0
-    if company_logo:
-        try:
-            logo_response = requests.get(company_logo, headers=headers, timeout=10, verify=True)
-            logo_response.raise_for_status()
-            logo_headers = {
-                "Authorization": auth_headers["Authorization"],
-                "Content-Disposition": f'attachment; filename="{company_name}_logo_job_{index}.jpg"',
-                "Content-Type": logo_response.headers.get("content-type", "image/jpeg"),
-                "X-WP-Nonce": auth_headers["X-WP-Nonce"]
+    /**
+     * Add custom admin columns.
+     */
+    public static function add_admin_columns( $columns ) {
+        $new_columns = array();
+        foreach ( $columns as $key => $value ) {
+            $new_columns[ $key ] = $value;
+            if ( $key === 'title' ) {
+                $new_columns['scraped_type'] = __( 'Type', 'scraped-data-staging' );
+                $new_columns['company_name'] = __( 'Company Name', 'scraped-data-staging' );
+                $new_columns['job_title'] = __( 'Job Title', 'scraped-data-staging' );
             }
-            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, timeout=10, verify=True)
-            media_response.raise_for_status()
-            attachment_id = media_response.json().get("id", 0)
-            logger.info(f"Uploaded logo for job {job_title}, Attachment ID: {attachment_id}")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to upload logo for job {job_title}: {str(e)}")
-            result["error"] = f"Logo upload failed: {str(e)}"
-            scrape_results.append(result)
-
-    post_data = {
-        "title": sanitize_text(job_title),
-        "content": job_description,
-        "status": "publish",
-        "featured_media": attachment_id,
-        "meta": {
-            "_scraped_type": "job",
-            "_job_title": sanitize_text(job_title),
-            "_job_location": sanitize_text(location),
-            "_job_type": sanitize_text(job_type),
-            "_job_description": job_description,
-            "_job_salary": sanitize_text(job_salary),
-            "_application": sanitize_text(application, is_url=('@' not in application)),
-            "_company_id": str(company_id) if company_id else "",
-            "_company_name": sanitize_text(company_name),
-            "_company_website": sanitize_text(job_data.get("company_website_url", ""), is_url=True),
-            "_company_logo": str(attachment_id) if attachment_id else "",
-            "_company_tagline": sanitize_text(job_data.get("company_details", "")),
-            "_company_address": sanitize_text(job_data.get("company_address", "")),
-            "_company_industry": sanitize_text(company_industry),
-            "_company_founded": sanitize_text(company_founded),
-            "_company_twitter": "",
-            "_company_video": ""
-        },
-        "job_listing_type": [job_type_id] if (job_type_id := get_or_create_term(job_type, "job_type", WP_JOB_TYPE_URL, auth_headers)) else [],
-        "job_listing_region": [job_region_id] if (job_region_id := get_or_create_term(location, "job_region", WP_JOB_REGION_URL, auth_headers)) else []
+        }
+        return $new_columns;
     }
-    logger.debug(f"Job post data for {job_title}: {json.dumps(post_data, indent=2)}")
-    try:
-        response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=True)
-        response.raise_for_status()
-        post = response.json()
-        result.update({
-            "post_id": str(post.get("id")),
-            "status": "success"
-        })
-        logger.info(f"Successfully posted job {job_title}: Post ID {post.get('id')}")
-        scrape_results.append(result)
-        return post.get("id"), post.get("link")
-    except requests.exceptions.HTTPError as e:
-        error_message = f"Failed to post job {job_title}: {str(e)}"
-        if response.status_code == 403:
-            error_message += f"\n403 Forbidden details: {response.text}"
-        logger.error(error_message)
-        result.update({
-            "status": "failed",
-            "error": error_message
-        })
-        scrape_results.append(result)
-        return None, None
-    except requests.exceptions.RequestException as e:
-        error_message = f"Failed to post job {job_title}: {str(e)}"
-        logger.error(error_message)
-        result.update({
-            "status": "failed",
-            "error": error_message
-        })
-        scrape_results.append(result)
-        return None, None
 
-def save_results_to_json():
-    try:
-        with open("scrape_results.json", "w") as f:
-            json.dump(scrape_results, f, indent=2)
-        logger.info("Saved scrape results to scrape_results.json")
-    except Exception as e:
-        logger.error(f"Failed to save scrape results: {str(e)}")
+    /**
+     * Populate custom admin columns.
+     */
+    public static function populate_admin_columns( $column, $post_id ) {
+        switch ( $column ) {
+            case 'scraped_type':
+                echo esc_html( get_post_meta( $post_id, '_scraped_type', true ) );
+                break;
+            case 'company_name':
+                echo esc_html( get_post_meta( $post_id, '_company_name', true ) );
+                break;
+            case 'job_title':
+                echo esc_html( get_post_meta( $post_id, '_job_title', true ) );
+                break;
+        }
+    }
 
-def load_processed_ids():
-    processed_ids = set()
-    try:
-        if os.path.exists(PROCESSED_IDS_FILE):
-            with open(PROCESSED_IDS_FILE, "r") as f:
-                processed_ids = set(line.strip() for line in f if line.strip())
-            logger.info(f"Loaded {len(processed_ids)} processed job IDs")
-        return processed_ids
-    except Exception as e:
-        logger.error(f"Failed to load processed IDs: {str(e)}")
-        return set()
+    /**
+     * Add meta box for approving staging posts.
+     */
+    public static function add_approve_meta_box() {
+        add_meta_box(
+            'sds_approve_box',
+            __( 'Approve Staging Data', 'scraped-data-staging' ),
+            array( __CLASS__, 'approve_meta_box_callback' ),
+            'staging_scraped',
+            'side',
+            'high'
+        );
+    }
 
-def save_processed_id(job_id):
-    try:
-        with open(PROCESSED_IDS_FILE, "a") as f:
-            f.write(f"{job_id}\n")
-        logger.info(f"Saved job ID {job_id}")
-    except Exception as e:
-        logger.error(f"Failed to save job ID {job_id}: {str(e)}")
+    /**
+     * Render meta box content.
+     */
+    public static function approve_meta_box_callback( $post ) {
+        wp_nonce_field( 'sds_approve_nonce', 'sds_approve_nonce' );
+        ?>
+        <p>
+            <input type="submit" name="sds_approve" value="<?php esc_attr_e( 'Approve and Publish', 'scraped-data-staging' ); ?>" class="button button-primary" />
+        </p>
+        <?php
+    }
 
-def load_last_page():
-    try:
-        if os.path.exists(LAST_PAGE_FILE):
-            with open(LAST_PAGE_FILE, "r") as f:
-                page = int(f.read().strip())
-                logger.info(f"Loaded last processed page: {page}")
-                return page
-        return 0
-    except Exception as e:
-        logger.error(f"Failed to load last page: {str(e)}")
-        return 0
+    /**
+     * Handle approval: Copy staging post to main post type and delete staging post.
+     */
+    public static function handle_approval( $post_id ) {
+        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+            return;
+        }
+        if ( ! isset( $_POST['sds_approve_nonce'] ) || ! wp_verify_nonce( $_POST['sds_approve_nonce'], 'sds_approve_nonce' ) ) {
+            return;
+        }
+        if ( ! current_user_can( 'edit_post', $post_id ) ) {
+            return;
+        }
+        if ( ! isset( $_POST['sds_approve'] ) ) {
+            return;
+        }
 
-def save_last_page(page):
-    try:
-        with open(LAST_PAGE_FILE, "w") as f:
-            f.write(str(page))
-        logger.info(f"Saved last processed page: {page}")
-    except Exception as e:
-        logger.error(f"Failed to save last page: {str(e)}")
+        $scraped_type = get_post_meta( $post_id, '_scraped_type', true );
+        if ( ! in_array( $scraped_type, array( 'company', 'job' ) ) ) {
+            wp_die( __( 'Invalid scraped type.', 'scraped-data-staging' ) );
+        }
 
-def crawl(auth_headers, processed_ids):
-    success_count = 0
-    failure_count = 0
-    total_jobs = 0
-    start_page = load_last_page()
-    
-    for i in range(start_page, 15):
-        url = f'https://www.linkedin.com/jobs/search?keywords=&location={scrape_location}&start={i * 25}'
-        logger.info(f'Fetching job search page: {url}')
-        time.sleep(random.uniform(5, 10))
-        try:
-            session = requests.Session()
-            retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-            session.mount('https://', HTTPAdapter(max_retries=retries))
-            response = session.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
-            if "login" in response.url or "challenge" in response.url:
-                logger.error("Login or CAPTCHA detected, stopping crawl")
-                scrape_results.append({
-                    "type": "system",
-                    "job_id": "",
-                    "job_title": "",
-                    "company_name": "",
-                    "post_id": "",
-                    "status": "failed",
-                    "error": "Login or CAPTCHA detected"
-                })
-                break
-            soup = BeautifulSoup(response.text, 'html.parser')
-            job_list = soup.select("#main-content > section > ul > li > div > a")
-            urls = [a['href'] for a in job_list if a.get('href')]
-            logger.info(f'Found {len(urls)} job URLs on page')
-            
-            for index, job_url in enumerate(urls):
-                job_data = scrape_job_details(job_url)
-                if not job_data:
-                    logger.error(f"No data scraped for job: {job_url}")
-                    scrape_results.append({
-                        "type": "job",
-                        "job_id": "",
-                        "job_title": "Unknown",
-                        "company_name": "",
-                        "post_id": "",
-                        "status": "failed",
-                        "error": f"No data scraped for job: {job_url}"
-                    })
-                    print(f"Job (URL: {job_url}) failed to scrape")
-                    failure_count += 1
-                    total_jobs += 1
-                    continue
-                
-                job_dict = {
-                    "job_title": job_data[0],
-                    "company_logo": job_data[1],
-                    "company_name": job_data[2],
-                    "company_url": job_data[3],
-                    "location": job_data[4],
-                    "environment": job_data[5],
-                    "job_type": job_data[6],
-                    "level": job_data[7],
-                    "job_functions": job_data[8],
-                    "industries": job_data[9],
-                    "job_description": job_data[10],
-                    "job_url": job_data[11],
-                    "company_details": job_data[12],
-                    "company_website_url": job_data[13],
-                    "company_industry": job_data[14],
-                    "company_size": job_data[15],
-                    "company_headquarters": job_data[16],
-                    "company_type": job_data[17],
-                    "company_founded": job_data[18],
-                    "company_specialties": job_data[19],
-                    "company_address": job_data[20],
-                    "application_url": job_data[21],
-                    "description_application_info": job_data[22],
-                    "resolved_application_info": job_data[23],
-                    "final_application_email": job_data[24],
-                    "final_application_url": job_data[25],
-                    "resolved_application_url": job_data[26],
-                    "job_salary": ""
+        $target_post_type = ( $scraped_type === 'company' ) ? 'company' : 'job_listing';
+
+        $post_data = array(
+            'post_title'   => get_the_title( $post_id ),
+            'post_content' => get_post_field( 'post_content', $post_id ),
+            'post_status'  => 'publish',
+            'post_type'    => $target_post_type,
+        );
+
+        $new_post_id = wp_insert_post( $post_data );
+
+        if ( ! is_wp_error( $new_post_id ) ) {
+            $meta_keys = self::get_all_meta_keys();
+            foreach ( $meta_keys as $key ) {
+                if ( $key === '_scraped_type' ) {
+                    continue;
                 }
-                
-                job_title = job_dict.get("job_title", "Unknown Job")
-                company_name = job_dict.get("company_name", "")
-                
-                job_id = generate_job_id(job_title, company_name)
-                
-                if job_id in processed_ids:
-                    logger.info(f"Skipping processed job: {job_id} ({job_title} at {company_name})")
-                    scrape_results.append({
-                        "type": "job",
-                        "job_id": job_id,
-                        "job_title": job_title,
-                        "company_name": company_name,
-                        "post_id": "",
-                        "status": "skipped",
-                        "error": "Already processed"
-                    })
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) skipped - already processed")
-                    total_jobs += 1
-                    continue
-                
-                if not company_name or company_name.lower() == "unknown":
-                    logger.info(f"Skipping job with unknown company: {job_title} (ID: {job_id})")
-                    scrape_results.append({
-                        "type": "job",
-                        "job_id": job_id,
-                        "job_title": job_title,
-                        "company_name": "",
-                        "post_id": "",
-                        "status": "skipped",
-                        "error": "Unknown company"
-                    })
-                    print(f"Job '{job_title}' (ID: {job_id}) skipped - unknown company")
-                    failure_count += 1
-                    total_jobs += 1
-                    continue
-                
-                total_jobs += 1
-                
-                company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
-                job_post_id, job_post_url = save_job_to_wordpress(index, job_dict, company_id, auth_headers)
-                
-                if job_post_id:
-                    processed_ids.add(job_id)
-                    save_processed_id(job_id)
-                    logger.info(f"Processed job: {job_id} - {job_title} at {company_name}")
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) posted. Post ID: {job_post_id}")
-                    success_count += 1
-                else:
-                    failure_count += 1
-            
-            save_last_page(i)
-        
-        except Exception as e:
-            logger.error(f'Error fetching job search page: {url} - {str(e)}')
-            scrape_results.append({
-                "type": "system",
-                "job_id": "",
-                "job_title": "",
-                "company_name": "",
-                "post_id": "",
-                "status": "failed",
-                "error": f"Error fetching job search page: {url} - {str(e)}"
-            })
-            failure_count += 1
-    
-    print("\n--- Summary ---")
-    print(f"Total jobs processed: {total_jobs}")
-    print(f"Successfully posted: {success_count}")
-    print(f"Failed to post or scrape: {failure_count}")
-    save_results_to_json()
+                $value = get_post_meta( $post_id, $key, true );
+                if ( $value !== '' ) {
+                    update_post_meta( $new_post_id, $key, $value );
+                }
+            }
 
-def scrape_job_details(job_url):
-    logger.info(f'Fetching job details from: {job_url}')
-    try:
-        session = requests.Session()
-        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        response = session.get(job_url, headers=headers, timeout=15)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
+            $featured_image = get_post_thumbnail_id( $post_id );
+            if ( $featured_image ) {
+                set_post_thumbnail( $new_post_id, $featured_image );
+            }
 
-        job_title = soup.select_one("h1.top-card-layout__title")
-        job_title = job_title.get_text().strip() if job_title else ''
-        logger.info(f'Scraped Job Title: {job_title}')
+            if ( $scraped_type === 'job' ) {
+                $taxonomies = array( 'job_listing_type', 'job_listing_region' );
+                foreach ( $taxonomies as $tax ) {
+                    $terms = wp_get_object_terms( $post_id, $tax, array( 'fields' => 'ids' ) );
+                    if ( ! is_wp_error( $terms ) && ! empty( $terms ) ) {
+                        wp_set_object_terms( $new_post_id, $terms, $tax );
+                    }
+                }
+            }
 
-        company_logo = soup.select_one("#main-content > section.core-rail.mx-auto.papabear\:w-core-rail-width.mamabear\:max-w-\[790px\].babybear\:max-w-\[790px\] > div > section.top-card-layout.container-lined.overflow-hidden.babybear\:rounded-\[0px\] > div > a > img")
-        company_logo = (company_logo.get('data-delayed-url') or company_logo.get('src') or '') if company_logo else ''
-        logger.info(f'Scraped Company Logo URL: {company_logo}')
-
-        company_name = soup.select_one(".topcard__org-name-link")
-        company_name = company_name.get_text().strip() if company_name else ''
-        logger.info(f'Scraped Company Name: {company_name}')
-
-        company_url = soup.select_one(".topcard__org-name-link")
-        company_url = company_url['href'] if company_url and company_url.get('href') else ''
-        if company_url:
-            company_url = re.sub(r'\?.*$', '', company_url)
-            logger.info(f'Scraped Company URL: {company_url}')
-
-        location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
-        location = location.get_text().strip() if location else scrape_location
-        location_parts = [part.strip() for part in location.split(',') if part.strip()]
-        location = ', '.join(dict.fromkeys(location_parts))
-        logger.info(f'Deduplicated location for {job_title}: {location}')
-
-        environment = ''
-        env_elements = soup.select(".topcard__flavor--metadata")
-        for elem in env_elements:
-            text = elem.get_text().strip().lower()
-            if 'remote' in text or 'hybrid' in text or 'on-site' in text:
-                environment = elem.get_text().strip()
-                break
-        logger.info(f'Scraped Environment: {environment}')
-
-        level = soup.select_one(".description__job-criteria-list > li:nth-child(1) > span")
-        level = level.get_text().strip() if level else ''
-        logger.info(f'Scraped Level: {level}')
-
-        job_type = soup.select_one(".description__job-criteria-list > li:nth-child(2) > span")
-        job_type = job_type.get_text().strip() if job_type else ''
-        job_type = FRENCH_TO_ENGLISH_JOB_TYPE.get(job_type, job_type)
-        logger.info(f'Scraped Type: {job_type}')
-
-        job_functions = soup.select_one(".description__job-criteria-list > li:nth-child(3) > span")
-        job_functions = job_functions.get_text().strip() if job_functions else ''
-        logger.info(f'Scraped Job Functions: {job_functions}')
-
-        industries = soup.select_one(".description__job-criteria-list > li:nth-child(4) > span")
-        industries = industries.get_text().strip() if industries else ''
-        logger.info(f'Scraped Industries: {industries}')
-
-        job_description = ''
-        description_container = soup.select_one(".show-more-less-html__markup")
-        if description_container:
-            paragraphs = description_container.find_all(['p', 'li'], recursive=False)
-            if paragraphs:
-                seen = set()
-                unique_paragraphs = []
-                for p in paragraphs:
-                    para = sanitize_text(p.get_text().strip())
-                    if not para:
-                        continue
-                    norm_para = normalize_for_deduplication(para)
-                    if norm_para and norm_para not in seen:
-                        unique_paragraphs.append(para)
-                        seen.add(norm_para)
-                job_description = '\n\n'.join(unique_paragraphs)
-            else:
-                raw_text = description_container.get_text(separator='\n').strip()
-                paragraphs = [para.strip() for para in raw_text.split('\n\n') if para.strip()]
-                seen = set()
-                unique_paragraphs = []
-                for para in paragraphs:
-                    para = sanitize_text(para)
-                    if not para:
-                        continue
-                    norm_para = normalize_for_deduplication(para)
-                    if norm_para and norm_para not in seen:
-                        unique_paragraphs.append(para)
-                        seen.add(norm_para)
-                job_description = '\n\n'.join(unique_paragraphs)
-            job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
-            job_description = split_paragraphs(job_description, max_length=200)
-            logger.info(f'Scraped Job Description (length): {len(job_description)}')
-
-        description_application_info = ''
-        description_application_url = ''
-        if description_container:
-            email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-            emails = re.findall(email_pattern, job_description)
-            if emails:
-                description_application_info = emails[0]
-                logger.info(f'Found email in job description: {description_application_info}')
-            else:
-                links = description_container.find_all('a', href=True)
-                for link in links:
-                    href = link['href']
-                    if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
-                        description_application_url = href
-                        description_application_info = href
-                        logger.info(f'Found application link in job description: {description_application_info}')
-                        break
-
-        application_anchor = soup.select_one("#teriary-cta-container > div > a")
-        application_url = application_anchor['href'] if application_anchor and application_anchor.get('href') else None
-        logger.info(f'Scraped Application URL: {application_url}')
-
-        resolved_application_info = ''
-        resolved_application_url = ''
-        final_application_email = description_application_info if description_application_info and '@' in description_application_info else ''
-        final_application_url = description_application_url if description_application_url else ''
-
-        if application_url:
-            try:
-                time.sleep(5)
-                resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True, verify=True)
-                resolved_application_url = resp_app.url
-                logger.info(f'Resolved Application URL: {resolved_application_url}')
-                
-                app_soup = BeautifulSoup(resp_app.text, 'html.parser')
-                email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-                emails = re.findall(email_pattern, resp_app.text)
-                if emails:
-                    resolved_application_info = emails[0]
-                else:
-                    links = app_soup.find_all('a', href=True)
-                    for link in links:
-                        href = link['href']
-                        if 'apply' in href.lower() or 'careers' in href.lower() or 'jobs' in href.lower():
-                            resolved_application_info = href
-                            break
-
-                if final_application_email and resolved_application_info and '@' in resolved_application_info:
-                    final_application_email = final_application_email
-                elif resolved_application_info and '@' in resolved_application_info:
-                    final_application_email = resolved_application_info
-
-                if description_application_url and resolved_application_url:
-                    final_application_url = description_application_url if description_application_url == resolved_application_url else resolved_application_url
-                elif resolved_application_url:
-                    final_application_url = resolved_application_url
-
-            except Exception as e:
-                logger.error(f'Failed to follow application URL: {str(e)}')
-                final_application_url = description_application_url if description_application_url else application_url or ''
-
-        company_details = ''
-        company_website_url = ''
-        company_industry = ''
-        company_size = ''
-        company_headquarters = ''
-        company_type = ''
-        company_founded = ''
-        company_specialties = ''
-        company_address = ''
-
-        if company_url:
-            logger.info(f'Fetching company page: {company_url}')
-            try:
-                company_response = session.get(company_url, headers=headers, timeout=15)
-                company_response.raise_for_status()
-                company_soup = BeautifulSoup(company_response.text, 'html.parser')
-
-                company_details_elem = company_soup.select_one("p.about-us__description") or company_soup.select_one("section.core-section-container > div > p")
-                company_details = company_details_elem.get_text().strip() if company_details_elem else ''
-
-                company_website_anchor = company_soup.select_one("dl > div:nth-child(1) > dd > a")
-                company_website_url = company_website_anchor['href'] if company_website_anchor and company_website_anchor.get('href') else ''
-                if 'linkedin.com/redir/redirect' in company_website_url:
-                    parsed_url = urlparse(company_website_url)
-                    query_params = parse_qs(parsed_url.query)
-                    if 'url' in query_params:
-                        company_website_url = unquote(query_params['url'][0])
-                if company_website_url and 'linkedin.com' not in company_website_url:
-                    try:
-                        time.sleep(5)
-                        resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True, verify=True)
-                        company_website_url = resp_company_web.url
-                    except Exception:
-                        company_website_url = ''
-                else:
-                    company_website_url = ''
-
-                def get_company_detail(label):
-                    elements = company_soup.select("section.core-section-container.core-section-container--with-border > div > dl > div")
-                    for elem in elements:
-                        dt = elem.find("dt")
-                        if dt and dt.get_text().strip().lower() == label.lower():
-                            dd = elem.find("dd")
-                            return dd.get_text().strip() if dd else ''
-                    return ''
-
-                company_industry = get_company_detail("Industry")
-                company_size = get_company_detail("Company size")
-                company_headquarters = get_company_detail("Headquarters")
-                company_type = get_company_detail("Type")
-                company_founded = get_company_detail("Founded")
-                company_specialties = get_company_detail("Specialties")
-                company_address = company_soup.select_one("#address-0")
-                company_address = company_address.get_text().strip() if company_address else company_headquarters
-            except Exception as e:
-                logger.error(f'Error fetching company page: {company_url} - {str(e)}')
-
-        return [
-            job_title,
-            company_logo,
-            company_name,
-            company_url,
-            location,
-            environment,
-            job_type,
-            level,
-            job_functions,
-            industries,
-            job_description,
-            job_url,
-            company_details,
-            company_website_url,
-            company_industry,
-            company_size,
-            company_headquarters,
-            company_type,
-            company_founded,
-            company_specialties,
-            company_address,
-            application_url,
-            description_application_info,
-            resolved_application_info,
-            final_application_email,
-            final_application_url,
-            resolved_application_url
-        ]
-    except Exception as e:
-        logger.error(f"Failed to scrape job details from {job_url}: {str(e)}")
-        return None
-
-def main():
-    auth_string = f"{wp_username}:{wp_app_password}"
-    auth = base64.b64encode(auth_string.encode()).decode()
-    wp_headers = {
-        "Authorization": f"Basic {auth}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "X-WP-Nonce": wp_rest_nonce
-    }
-    
-    # Test authentication and permissions
-    try:
-        test_response = requests.get(f"{base_url}/wp-json/wp/v2/users/me", headers=wp_headers, timeout=10, verify=True)
-        test_response.raise_for_status()
-        user_data = test_response.json()
-        logger.info(f"Authentication successful for user: {wp_username} (ID: {user_data.get('id')})")
-        
-        # Test permission to create staging_scraped posts
-        test_post_data = {
-            "title": "Permission Test",
-            "content": "Testing permission to create staging_scraped post",
-            "status": "publish",
-            "meta": {"_scraped_type": "test"}
+            wp_delete_post( $post_id, true );
+            wp_redirect( get_edit_post_link( $new_post_id, 'raw' ) );
+            exit;
+        } else {
+            wp_die( __( 'Error creating main post.', 'scraped-data-staging' ) );
         }
-        test_response = requests.post(WP_URL, json=test_post_data, headers=wp_headers, timeout=15, verify=True)
-        test_response.raise_for_status()
-        logger.info("User has permission to create staging_scraped posts")
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"Authentication or permission test failed: {str(e)}")
-        if test_response.status_code == 403:
-            logger.error(f"403 Forbidden details: {test_response.text}")
-            scrape_results.append({
-                "type": "system",
-                "job_id": "",
-                "job_title": "",
-                "company_name": "",
-                "post_id": "",
-                "status": "failed",
-                "error": f"Authentication or permission test failed: {test_response.text}"
-            })
-            save_results_to_json()
-        return
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Authentication test failed: {str(e)}")
-        scrape_results.append({
-            "type": "system",
-            "job_id": "",
-            "job_title": "",
-            "company_name": "",
-            "post_id": "",
-            "status": "failed",
-            "error": f"Authentication test failed: {str(e)}"
-        })
-        save_results_to_json()
-        return
-    
-    processed_ids = load_processed_ids()
-    crawl(auth_headers=wp_headers, processed_ids=processed_ids)
+    }
 
-if __name__ == "__main__":
-    main()
+    /**
+     * Remove "Add New" link from post row actions.
+     */
+    public static function remove_row_actions( $actions, $post ) {
+        if ( $post->post_type === 'staging_scraped' ) {
+            unset( $actions['inline hide-if-no-js'] );
+        }
+        return $actions;
+    }
+
+    /**
+     * Hide the "Add New" button in the admin interface.
+     */
+    public static function hide_add_new_button() {
+        if ( get_current_screen()->post_type === 'staging_scraped' ) {
+            echo '<style>
+                .page-title-action { display: none !important; }
+            </style>';
+        }
+    }
+
+    /**
+     * Add settings page under the plugin menu.
+     */
+    public static function add_settings_page() {
+        add_submenu_page(
+            'edit.php?post_type=staging_scraped',
+            __( 'Scraper Settings', 'scraped-data-staging' ),
+            __( 'Scraper Settings', 'scraped-data-staging' ),
+            'manage_options',
+            'sds-settings',
+            array( __CLASS__, 'settings_page_callback' )
+        );
+    }
+
+    /**
+     * Register settings for GitHub and scraper configuration.
+     */
+    public static function register_settings() {
+        register_setting( 'sds_settings_group', 'sds_github_token', array( 'sanitize_callback' => 'sanitize_text_field' ) );
+        register_setting( 'sds_settings_group', 'sds_base_url', array( 'sanitize_callback' => 'esc_url_raw' ) );
+        register_setting( 'sds_settings_group', 'sds_wp_username', array( 'sanitize_callback' => 'sanitize_text_field' ) );
+        register_setting( 'sds_settings_group', 'sds_wp_app_password', array( 'sanitize_callback' => 'sanitize_text_field' ) );
+        register_setting( 'sds_settings_group', 'sds_scrape_location', array( 'sanitize_callback' => 'sanitize_text_field' ) );
+        register_setting( 'sds_settings_group', 'sds_last_workflow_run_id', array( 'sanitize_callback' => 'sanitize_text_field' ) );
+
+        add_settings_section( 'sds_general', __( 'GitHub and Scraper Settings', 'scraped-data-staging' ), null, 'sds-settings' );
+
+        add_settings_field(
+            'sds_github_token',
+            __( 'GitHub Personal Access Token', 'scraped-data-staging' ),
+            array( __CLASS__, 'field_callback' ),
+            'sds-settings',
+            'sds_general',
+            array( 'id' => 'sds_github_token', 'type' => 'password', 'description' => __( 'Enter your GitHub personal access token with repo, workflow, and actions permissions.', 'scraped-data-staging' ) )
+        );
+        add_settings_field(
+            'sds_base_url',
+            __( 'WordPress Base URL', 'scraped-data-staging' ),
+            array( __CLASS__, 'field_callback' ),
+            'sds-settings',
+            'sds_general',
+            array( 'id' => 'sds_base_url', 'type' => 'url', 'description' => __( 'Enter the base URL of your WordPress site (e.g., https://your-site.com).', 'scraped-data-staging' ) )
+        );
+        add_settings_field(
+            'sds_wp_username',
+            __( 'WordPress Username', 'scraped-data-staging' ),
+            array( __CLASS__, 'field_callback' ),
+            'sds-settings',
+            'sds_general',
+            array( 'id' => 'sds_wp_username', 'type' => 'text', 'description' => __( 'Enter the WordPress username for REST API authentication.', 'scraped-data-staging' ) )
+        );
+        add_settings_field(
+            'sds_wp_app_password',
+            __( 'WordPress Application Password', 'scraped-data-staging' ),
+            array( __CLASS__, 'field_callback' ),
+            'sds-settings',
+            'sds_general',
+            array( 'id' => 'sds_wp_app_password', 'type' => 'password', 'description' => __( 'Enter the application password for REST API authentication.', 'scraped-data-staging' ) )
+        );
+        add_settings_field(
+            'sds_scrape_location',
+            __( 'Scrape Location', 'scraped-data-staging' ),
+            array( __CLASS__, 'field_callback' ),
+            'sds-settings',
+            'sds_general',
+            array( 'id' => 'sds_scrape_location', 'type' => 'text', 'description' => __( 'Enter the location for job scraping (e.g., Worldwide, New York).', 'scraped-data-staging' ) )
+        );
+    }
+
+    /**
+     * Render settings field.
+     */
+    public static function field_callback( $args ) {
+        $value = get_option( $args['id'], ( $args['id'] === 'sds_base_url' ? get_site_url() : '' ) );
+        ?>
+        <input type="<?php echo esc_attr( $args['type'] ); ?>" id="<?php echo esc_attr( $args['id'] ); ?>" name="<?php echo esc_attr( $args['id'] ); ?>" value="<?php echo esc_attr( $value ); ?>" class="regular-text" />
+        <?php if ( ! empty( $args['description'] ) ) : ?>
+            <p class="description"><?php echo esc_html( $args['description'] ); ?></p>
+        <?php endif; ?>
+        <?php
+    }
+
+    /**
+     * Check GitHub connection status.
+     */
+    private static function check_github_connection() {
+        $token = get_option( 'sds_github_token', '' );
+
+        if ( ! $token ) {
+            return array( 'status' => 'error', 'message' => __( 'GitHub token is missing.', 'scraped-data-staging' ) );
+        }
+
+        $repo_url = "https://api.github.com/repos/" . self::$github_repo;
+        $headers = array(
+            'Authorization' => 'Bearer ' . $token,
+            'Accept' => 'application/vnd.github.v3+json',
+            'User-Agent' => 'WordPress-Scraped-Data-Staging',
+        );
+
+        $response = wp_remote_get( $repo_url, array( 'headers' => $headers, 'timeout' => 10 ) );
+
+        if ( is_wp_error( $response ) ) {
+            return array( 'status' => 'error', 'message' => __( 'Failed to connect to GitHub: ', 'scraped-data-staging' ) . $response->get_error_message() );
+        }
+
+        $status_code = wp_remote_retrieve_response_code( $response );
+        if ( $status_code === 200 ) {
+            return array( 'status' => 'success', 'message' => __( 'Successfully connected to GitHub repository.', 'scraped-data-staging' ) );
+        } else {
+            $body = json_decode( wp_remote_retrieve_body( $response ), true );
+            return array( 'status' => 'error', 'message' => __( 'GitHub connection failed: ', 'scraped-data-staging' ) . ( $body['message'] ?? 'Unknown error' ) );
+        }
+    }
+
+    /**
+     * Trigger the GitHub Actions workflow and fetch initial results.
+     */
+    public static function trigger_scraper() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'scraped-data-staging' ) );
+        }
+
+        check_admin_referer( 'sds_trigger_scraper_nonce' );
+
+        $token = get_option( 'sds_github_token', '' );
+        $wp_username = get_option( 'sds_wp_username', '' );
+        $wp_app_password = get_option( 'sds_wp_app_password', '' );
+        $scrape_location = get_option( 'sds_scrape_location', '' );
+        $wp_base_url = get_option( 'sds_base_url', '' );
+
+        // Validate required fields
+        if ( ! $token ) {
+            wp_redirect( admin_url( 'edit.php?post_type=staging_scraped&page=sds-settings&error=' . urlencode( __( 'GitHub token is missing.', 'scraped-data-staging' ) ) ) );
+            exit;
+        }
+
+        if ( ! $wp_username || ! $wp_app_password || ! $scrape_location || ! $wp_base_url ) {
+            wp_redirect( admin_url( 'edit.php?post_type=staging_scraped&page=sds-settings&error=' . urlencode( __( 'WordPress username, application password, scrape location, or base URL is missing.', 'scraped-data-staging' ) ) ) );
+            exit;
+        }
+
+        // Generate a nonce for the REST API
+        $nonce = wp_create_nonce( 'wp_rest' );
+
+        $workflow_url = "https://api.github.com/repos/" . self::$github_repo . "/actions/workflows/scraper.yml/dispatches";
+        $headers = array(
+            'Authorization' => 'Bearer ' . $token,
+            'Accept' => 'application/vnd.github.v3+json',
+            'User-Agent' => 'WordPress-Scraped-Data-Staging',
+            'Content-Type' => 'application/json',
+        );
+
+        $body = array(
+            'ref' => 'main',
+            'inputs' => array(
+                'wp_base_url' => $wp_base_url,
+                'wp_username' => $wp_username,
+                'wp_app_password' => $wp_app_password,
+                'scrape_location' => $scrape_location,
+                'wp_rest_nonce' => $nonce,
+            ),
+        );
+
+        $response = wp_remote_post( $workflow_url, array(
+            'headers' => $headers,
+            'body' => wp_json_encode( $body ),
+            'timeout' => 15,
+        ) );
+
+        if ( is_wp_error( $response ) ) {
+            wp_redirect( admin_url( 'edit.php?post_type=staging_scraped&page=sds-settings&error=' . urlencode( __( 'Failed to trigger scraper: ', 'scraped-data-staging' ) . $response->get_error_message() ) ) );
+            exit;
+        }
+
+        $status_code = wp_remote_retrieve_response_code( $response );
+        if ( $status_code === 204 ) {
+            // Fetch the latest workflow run to get the run ID
+            $runs_url = "https://api.github.com/repos/" . self::$github_repo . "/actions/workflows/scraper.yml/runs";
+            $runs_response = wp_remote_get( $runs_url, array(
+                'headers' => $headers,
+                'timeout' => 10,
+            ) );
+
+            if ( ! is_wp_error( $runs_response ) && wp_remote_retrieve_response_code( $runs_response ) === 200 ) {
+                $runs = json_decode( wp_remote_retrieve_body( $runs_response ), true );
+                if ( ! empty( $runs['workflow_runs'] ) ) {
+                    $latest_run = $runs['workflow_runs'][0];
+                    update_option( 'sds_last_workflow_run_id', $latest_run['id'] );
+                }
+            }
+
+            // Fetch initial results
+            $results = self::get_workflow_results();
+            if ( $results['status'] === 'success' ) {
+                wp_redirect( admin_url( 'edit.php?post_type=staging_scraped&page=sds-settings&success=' . urlencode( __( 'Scraper workflow triggered successfully.', 'scraped-data-staging' ) ) . '&results_refreshed=1' ) );
+            } else {
+                wp_redirect( admin_url( 'edit.php?post_type=staging_scraped&page=sds-settings&success=' . urlencode( __( 'Scraper workflow triggered successfully, but results may not be available yet. Click "Refresh Results" to check.', 'scraped-data-staging' ) ) ) );
+            }
+        } else {
+            $body = json_decode( wp_remote_retrieve_body( $response ), true );
+            wp_redirect( admin_url( 'edit.php?post_type=staging_scraped&page=sds-settings&error=' . urlencode( __( 'Failed to trigger scraper: ', 'scraped-data-staging' ) . ( $body['message'] ?? 'Unknown error' ) ) ) );
+        }
+        exit;
+    }
+
+    /**
+     * Fetch GitHub Actions workflow results.
+     */
+    private static function get_workflow_results() {
+        $token = get_option( 'sds_github_token', '' );
+        $run_id = get_option( 'sds_last_workflow_run_id', '' );
+
+        if ( ! $token || ! $run_id ) {
+            return array( 'status' => 'error', 'message' => __( 'No workflow run ID or GitHub token available.', 'scraped-data-staging' ) );
+        }
+
+        $logs_url = "https://api.github.com/repos/" . self::$github_repo . "/actions/runs/$run_id/artifacts";
+        $headers = array(
+            'Authorization' => 'Bearer ' . $token,
+            'Accept' => 'application/vnd.github.v3+json',
+            'User-Agent' => 'WordPress-Scraped-Data-Staging',
+        );
+
+        // Fetch list of artifacts
+        $response = wp_remote_get( $logs_url, array(
+            'headers' => $headers,
+            'timeout' => 15,
+        ) );
+
+        if ( is_wp_error( $response ) ) {
+            return array( 'status' => 'error', 'message' => __( 'Failed to fetch artifacts list: ', 'scraped-data-staging' ) . $response->get_error_message() );
+        }
+
+        $status_code = wp_remote_retrieve_response_code( $response );
+        if ( $status_code !== 200 ) {
+            $body = json_decode( wp_remote_retrieve_body( $response ), true );
+            return array( 'status' => 'error', 'message' => __( 'Failed to fetch artifacts list: ', 'scraped-data-staging' ) . ( $body['message'] ?? 'Unknown error' ) );
+        }
+
+        $artifacts = json_decode( wp_remote_retrieve_body( $response ), true );
+        $artifact_id = null;
+        foreach ( $artifacts['artifacts'] as $artifact ) {
+            if ( $artifact['name'] === 'scraper-results' ) {
+                $artifact_id = $artifact['id'];
+                break;
+            }
+        }
+
+        if ( ! $artifact_id ) {
+            return array( 'status' => 'error', 'message' => __( 'No scraper-results artifact found. The scraper may still be running.', 'scraped-data-staging' ) );
+        }
+
+        // Fetch the artifact ZIP
+        $artifact_url = "https://api.github.com/repos/" . self::$github_repo . "/actions/artifacts/$artifact_id/zip";
+        $response = wp_remote_get( $artifact_url, array(
+            'headers' => $headers,
+            'timeout' => 15,
+        ) );
+
+        if ( is_wp_error( $response ) ) {
+            return array( 'status' => 'error', 'message' => __( 'Failed to fetch artifact: ', 'scraped-data-staging' ) . $response->get_error_message() );
+        }
+
+        $status_code = wp_remote_retrieve_response_code( $response );
+        if ( $status_code !== 200 ) {
+            $body = json_decode( wp_remote_retrieve_body( $response ), true );
+            return array( 'status' => 'error', 'message' => __( 'Failed to fetch artifact: ', 'scraped-data-staging' ) . ( $body['message'] ?? 'Unknown error' ) );
+        }
+
+        // Extract scrape_results.json from the ZIP
+        $zip_content = wp_remote_retrieve_body( $response );
+        $temp_file = wp_tempnam();
+        file_put_contents( $temp_file, $zip_content );
+
+        $results = array();
+        if ( class_exists( 'ZipArchive' ) ) {
+            $zip = new ZipArchive();
+            if ( $zip->open( $temp_file ) === true ) {
+                for ( $i = 0; $i < $zip->numFiles; $i++ ) {
+                    $filename = $zip->getNameIndex( $i );
+                    if ( strpos( $filename, 'scrape_results.json' ) !== false ) {
+                        $results = json_decode( $zip->getFromIndex( $i ), true );
+                        break;
+                    }
+                }
+                $zip->close();
+            }
+        }
+
+        wp_delete_file( $temp_file );
+
+        if ( empty( $results ) ) {
+            return array( 'status' => 'error', 'message' => __( 'No results found in the artifact. The scraper may still be running.', 'scraped-data-staging' ) );
+        }
+
+        return array( 'status' => 'success', 'results' => $results );
+    }
+
+    /**
+     * Handle results refresh action.
+     */
+    public static function refresh_results() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'scraped-data-staging' ) );
+        }
+
+        check_admin_referer( 'sds_refresh_results_nonce' );
+
+        wp_redirect( admin_url( 'edit.php?post_type=staging_scraped&page=sds-settings&results_refreshed=1' ) );
+        exit;
+    }
+
+    /**
+     * Render settings page with GitHub connection status, trigger button, and results table.
+     */
+    public static function settings_page_callback() {
+        $connection = self::check_github_connection();
+        $success = isset( $_GET['success'] ) ? sanitize_text_field( $_GET['success'] ) : '';
+        $error = isset( $_GET['error'] ) ? sanitize_text_field( $_GET['error'] ) : '';
+        $results_refreshed = isset( $_GET['results_refreshed'] ) ? true : false;
+        $results = $results_refreshed ? self::get_workflow_results() : array( 'status' => 'none', 'message' => '' );
+        ?>
+        <div class="wrap">
+            <h1><?php esc_html_e( 'Scraper Settings', 'scraped-data-staging' ); ?></h1>
+            <?php if ( $success ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php echo esc_html( $success ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( $error ) : ?>
+                <div class="notice notice-error is-dismissible"><p><?php echo esc_html( $error ); ?></p></div>
+            <?php endif; ?>
+            <h2><?php esc_html_e( 'GitHub Connection Status', 'scraped-data-staging' ); ?></h2>
+            <p><strong><?php echo $connection['status'] === 'success' ? __( 'Connected', 'scraped-data-staging' ) : __( 'Not Connected', 'scraped-data-staging' ); ?></strong>: <?php echo esc_html( $connection['message'] ); ?></p>
+            <form method="post" action="options.php">
+                <?php
+                settings_fields( 'sds_settings_group' );
+                do_settings_sections( 'sds-settings' );
+                submit_button();
+                ?>
+            </form>
+            <h2><?php esc_html_e( 'Run Scraper', 'scraped-data-staging' ); ?></h2>
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                <input type="hidden" name="action" value="sds_trigger_scraper">
+                <?php wp_nonce_field( 'sds_trigger_scraper_nonce' ); ?>
+                <p>
+                    <input type="submit" class="button button-primary" value="<?php esc_attr_e( 'Run Scraper Now', 'scraped-data-staging' ); ?>" <?php echo $connection['status'] !== 'success' ? 'disabled' : ''; ?> />
+                    <p class="description"><?php esc_html_e( 'Triggers the scraper script via GitHub Actions.', 'scraped-data-staging' ); ?></p>
+                </p>
+            </form>
+            <h2><?php esc_html_e( 'Scraper Results', 'scraped-data-staging' ); ?></h2>
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                <input type="hidden" name="action" value="sds_refresh_results">
+                <?php wp_nonce_field( 'sds_refresh_results_nonce' ); ?>
+                <p>
+                    <input type="submit" class="button button-secondary" value="<?php esc_attr_e( 'Refresh Results', 'scraped-data-staging' ); ?>" <?php echo ! get_option( 'sds_last_workflow_run_id', '' ) ? 'disabled' : ''; ?> />
+                    <p class="description"><?php esc_html_e( 'Fetches the latest results from the GitHub Actions workflow.', 'scraped-data-staging' ); ?></p>
+                </p>
+            </form>
+            <?php if ( $results['status'] === 'success' && ! empty( $results['results'] ) ) : ?>
+                <div class="sds-results">
+                    <h3><?php esc_html_e( 'Latest Scraper Results', 'scraped-data-staging' ); ?></h3>
+                    <table class="wp-list-table widefat fixed striped">
+                        <thead>
+                            <tr>
+                                <th><?php esc_html_e( 'Type', 'scraped-data-staging' ); ?></th>
+                                <th><?php esc_html_e( 'Job ID', 'scraped-data-staging' ); ?></th>
+                                <th><?php esc_html_e( 'Job Title', 'scraped-data-staging' ); ?></th>
+                                <th><?php esc_html_e( 'Company Name', 'scraped-data-staging' ); ?></th>
+                                <th><?php esc_html_e( 'Post ID', 'scraped-data-staging' ); ?></th>
+                                <th><?php esc_html_e( 'Status', 'scraped-data-staging' ); ?></th>
+                                <th><?php esc_html_e( 'Error', 'scraped-data-staging' ); ?></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ( $results['results'] as $result ) : ?>
+                                <tr>
+                                    <td><?php echo esc_html( ucfirst( $result['type'] ) ); ?></td>
+                                    <td><?php echo esc_html( $result['job_id'] ); ?></td>
+                                    <td><?php echo esc_html( $result['job_title'] ); ?></td>
+                                    <td><?php echo esc_html( $result['company_name'] ); ?></td>
+                                    <td>
+                                        <?php if ( $result['post_id'] && $result['status'] === 'success' ) : ?>
+                                            <a href="<?php echo esc_url( admin_url( 'post.php?post=' . $result['post_id'] . '&action=edit' ) ); ?>">
+                                                <?php echo esc_html( $result['post_id'] ); ?>
+                                            </a>
+                                        <?php else : ?>
+                                            <?php echo esc_html( $result['post_id'] ); ?>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo esc_html( ucfirst( $result['status'] ) ); ?></td>
+                                    <td><?php echo esc_html( $result['error'] ); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php elseif ( $results['status'] === 'error' ) : ?>
+                <div class="notice notice-error is-dismissible"><p><?php echo esc_html( $results['message'] ); ?></p></div>
+            <?php elseif ( get_option( 'sds_last_workflow_run_id', '' ) ) : ?>
+                <p><?php esc_html_e( 'Click "Refresh Results" to view the latest scraper results.', 'scraped-data-staging' ); ?></p>
+            <?php else : ?>
+                <p><?php esc_html_e( 'No results available. Run the scraper to generate results.', 'scraped-data-staging' ); ?></p>
+            <?php endif; ?>
+            <style>
+                .sds-results table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 10px;
+                }
+                .sds-results th, .sds-results td {
+                    padding: 8px;
+                    text-align: left;
+                    vertical-align: top;
+                }
+                .sds-results th {
+                    background: #f5f5f5;
+                    font-weight: bold;
+                }
+                .sds-results tr:nth-child(even) {
+                    background: #f9f9f9;
+                }
+                .sds-results td {
+                    max-width: 300px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+                .sds-results td:hover {
+                    overflow: visible;
+                    white-space: normal;
+                    word-break: break-word;
+                }
+            </style>
+        </div>
+        <?php
+    }
+}
+
+// Initialize the plugin.
+Scraped_Data_Staging::init();
