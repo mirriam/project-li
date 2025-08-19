@@ -12,10 +12,15 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
 
-base_url = "${{ secrets.WP_BASE_URL }}"
-wp_username = "${{ secrets.WP_USERNAME }}"
-wp_app_password = "${{ secrets.WP_APP_PASSWORD }}"
-scrape_location = "${{ secrets.SCRAPE_LOCATION }}"
+# Use environment variables set by GitHub Actions workflow inputs
+base_url = os.getenv("WP_BASE_URL")
+wp_username = os.getenv("WP_USERNAME")
+wp_app_password = os.getenv("WP_APP_PASSWORD")
+scrape_location = os.getenv("SCRAPE_LOCATION")
+
+# Validate environment variables
+if not all([base_url, wp_username, wp_app_password, scrape_location]):
+    raise ValueError("Missing required environment variables: WP_BASE_URL, WP_USERNAME, WP_APP_PASSWORD, or SCRAPE_LOCATION")
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
