@@ -201,91 +201,44 @@ def save_company_to_wordpress(index, company_data, wp_headers):
         logger.error(f"Failed to post company {company_name}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}")
         return None, None
 
-def save_article_to_wordpress(index, job_data, company_id, auth_headers):
-    job_title = job_data.get("job_title", "")
-    job_description = job_data.get("job_description", "")
-    job_type = job_data.get("job_type", "")
-    location = job_data.get("location", "Mauritius")
-    job_url = job_data.get("job_url", "")
-    company_name = job_data.get("company_name", "")
-    company_logo = job_data.get("company_logo", "")
-    environment = job_data.get("environment", "").lower()
-    job_salary = job_data.get("job_salary", "")
-    company_industry = job_data.get("company_industry", "")
-    company_founded = job_data.get("company_founded", "")
-    
-    # Check if job already exists on WordPress
-    existing_post_id, existing_post_url = check_existing_job(job_title, company_name, auth_headers)
-    if existing_post_id:
-        logger.info(f"Skipping duplicate job: {job_title} at {company_name}, already posted with Post ID: {existing_post_id}")
-        print(f"Job '{job_title}' at {company_name} skipped - already posted on WordPress. Post ID: {existing_post_id}, URL: {existing_post_url}")
-        return existing_post_id, existing_post_url
-
-    application = ''
-    if '@' in job_data.get("description_application_info", ""):
-        application = job_data.get("description_application_info", "")
-    elif job_data.get("resolved_application_url", ""):
-        application = job_data.get("resolved_application_url", "")
-    else:
-        application = job_data.get("application_url", "")
-        if not application:
-            logger.warning(f"No valid application email or URL found for job {job_title}")
-
-    attachment_id = 0
-    if company_logo:
-        try:
-            logo_response = requests.get(company_logo, headers=headers, timeout=10)
-            logo_response.raise_for_status()
-            logo_headers = {
-                "Authorization": auth_headers["Authorization"],
-                "Content-Disposition": f'attachment; filename="{company_name}_logo_job_{index}.jpg"',
-                "Content-Type": logo_response.headers.get("content-type", "image/jpeg")
-            }
-            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, verify=False)
-            media_response.raise_for_status()
-            attachment_id = media_response.json().get("id", 0)
-            logger.info(f"Uploaded logo for job {job_title}, Attachment ID: {attachment_id}")
-        except Exception as e:
-            logger.error(f"Failed to upload logo for job {job_title}: {str(e)}")
-
-    post_data = {
-        "title": sanitize_text(job_title),
-        "content": job_description,
-        "status": "publish",
-        "featured_media": attachment_id,
-        "meta": {
-            "_job_title": sanitize_text(job_title),
-            "_job_location": sanitize_text(location),
-            "_job_type": sanitize_text(job_type),
-            "_job_description": job_description,
-            "_job_salary": sanitize_text(job_salary),
-            "_application": sanitize_text(application, is_url=('@' not in application)),
-            "_company_id": str(company_id) if company_id else "",
-            "_company_name": sanitize_text(company_name),
-            "_company_website": sanitize_text(job_data.get("company_website_url", ""), is_url=True),
-            "_company_logo": str(attachment_id) if attachment_id else "",
-            "_company_tagline": sanitize_text(job_data.get("company_details", "")),
-            "_company_address": sanitize_text(job_data.get("company_address", "")),
-            "_company_industry": sanitize_text(company_industry),
-            "_company_founded": sanitize_text(company_founded),
-            "_company_twitter": "",
-            "_company_video": ""
-        },
-        "job_listing_type": [job_type_id] if (job_type_id := get_or_create_term(job_type, "job_type", WP_JOB_TYPE_URL, auth_headers)) else [],
-        "job_listing_region": [job_region_id] if (job_region_id := get_or_create_term(location, "job_region", WP_JOB_REGION_URL, auth_headers)) else []
+def save_article_to_json(index, job_data, company_id, auth_headers):
+    """Send scraped job data to WordPress plugin JSON endpoint instead of creating a post."""
+    job_payload = {
+        "job_title": job_data.get("job_title", ""),
+        "job_description": job_data.get("job_description", ""),
+        "job_type": job_data.get("job_type", ""),
+        "location": job_data.get("location", "Mauritius"),
+        "job_url": job_data.get("job_url", ""),
+        "company_name": job_data.get("company_name", ""),
+        "company_logo": job_data.get("company_logo", ""),
+        "job_salary": job_data.get("job_salary", ""),
+        "application": job_data.get("application_url", ""),
+        "company": {
+            "id": company_id,
+            "name": job_data.get("company_name", ""),
+            "website": job_data.get("company_website_url", ""),
+            "industry": job_data.get("company_industry", ""),
+            "founded": job_data.get("company_founded", ""),
+            "address": job_data.get("company_address", "")
+        }
     }
-    
-    logger.info(f"Final job post payload for {job_title}: {json.dumps(post_data, indent=2)[:200]}...")
-    
+
     try:
-        response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=False)
+        response = requests.post(
+            "https://mauritius.mimusjobs.com/wp-json/mimusjobs/v1/add",
+            headers=auth_headers,
+            json=job_payload,
+            timeout=15,
+            verify=False
+        )
         response.raise_for_status()
-        post = response.json()
-        logger.info(f"Successfully posted job {job_title}: Post ID {post.get('id')}, URL {post.get('link')}")
-        return post.get("id"), post.get("link")
+        result = response.json()
+        logger.info(f"Job sent to plugin JSON store: {job_payload['job_title']} at {job_payload['company_name']}")
+        return result.get("status"), result.get("message")
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to post job {job_title}: {str(e)}, Status: {response.status_code if response else 'None'}, Response: {response.text if response else 'None'}")
+        logger.error(f"Failed to send job to JSON plugin: {str(e)}")
         return None, None
+
 
 def load_processed_ids():
     """Load processed job IDs from file."""
@@ -328,44 +281,6 @@ def save_last_page(page):
         logger.info(f"Saved last processed page: {page} to {LAST_PAGE_FILE}")
     except Exception as e:
         logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
-
-def save_to_json(job_dict, company_id, job_post_id, job_post_url, company_url):
-    """Save job and company data to scraped_jobs.json."""
-    try:
-        # Ensure the JSON file exists and is initialized as a list
-        json_file = "scraped_jobs.json"
-        json_data = []
-        if os.path.exists(json_file):
-            try:
-                with open(json_file, "r", encoding='utf-8') as f:
-                    json_data = json.load(f)
-                    if not isinstance(json_data, list):
-                        json_data = [json_data]
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning(f"Error reading {json_file}: {str(e)}. Initializing as empty list.")
-                json_data = []
-
-        # Create the data entry
-        data = {
-            "job_id": generate_job_id(job_dict.get("job_title", ""), job_dict.get("company_name", "")),
-            "job_data": job_dict,
-            "company_id": company_id,
-            "job_post_id": job_post_id,
-            "job_post_url": job_post_url,
-            "company_url": company_url,
-            "scraped_at": time.strftime("%Y-%m-%d %H:%M:%S")
-        }
-        
-        # Append new data
-        json_data.append(data)
-        
-        # Write back to file with proper permissions
-        with open(json_file, "w", encoding='utf-8') as f:
-            json.dump(json_data, f, indent=2, ensure_ascii=False)
-            f.flush()  # Ensure data is written to disk
-        logger.info(f"Successfully saved job data to {json_file}: {job_dict.get('job_title', '')} at {job_dict.get('company_name', '')}")
-    except Exception as e:
-        logger.error(f"Failed to save to {json_file}: {str(e)}", exc_info=True)
 
 def crawl(auth_headers, processed_ids):
     success_count = 0
@@ -452,10 +367,8 @@ def crawl(auth_headers, processed_ids):
                 total_jobs += 1
                 
                 company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
-                job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
-                
-                # Save to JSON immediately after processing company and job
-                save_to_json(job_dict, company_id, job_post_id, job_post_url, company_url)
+                status, message = save_article_to_json(index, job_dict, company_id, auth_headers)
+
                 
                 if job_post_id:
                     processed_ids.add(job_id)
@@ -580,8 +493,7 @@ def scrape_job_details(job_url):
             logger.info(f'Raw Job Description (length): {len(job_description)}')
             job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
             job_description = split_paragraphs(job_description, max_length=200)
-            paragraph_count = len(job_description.split('\n\n'))
-            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {paragraph_count}')
+            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split('\n\n'))}')
         else:
             logger.warning(f"No job description container found for {job_title}")
 
@@ -818,5 +730,4 @@ def main():
     crawl(auth_headers=wp_headers, processed_ids=processed_ids)
 
 if __name__ == "__main__":
-    main()
-
+    main() 
