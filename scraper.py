@@ -11,43 +11,16 @@ import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
-import argparse
 
-# Configure command-line arguments
-parser = argparse.ArgumentParser(description="LinkedIn job scraper for WordPress")
-parser.add_argument("--wp-base-url", required=True, help="WordPress base URL (e.g., https://your-site.com)")
-parser.add_argument("--wp-username", required=True, help="WordPress username for API authentication")
-parser.add_argument("--wp-app-password", required=True, help="WordPress application password for API authentication")
-parser.add_argument("--scrape-location", required=True, help="Location for job scraping (e.g., Worldwide)")
-args = parser.parse_args()
+# Use environment variables set by GitHub Actions workflow inputs
+base_url = os.getenv("WP_BASE_URL")
+wp_username = os.getenv("WP_USERNAME")
+wp_app_password = os.getenv("WP_APP_PASSWORD")
+scrape_location = os.getenv("SCRAPE_LOCATION")
 
-# Get GitHub token from environment (optional)
-github_token = os.getenv("GITHUB_TOKEN")
-
-# Sanitize and validate wp-base-url
-base_url = args.wp_base_url.strip()
-if not base_url:
-    logger.error("wp-base-url is empty")
-    raise ValueError("wp-base-url cannot be empty")
-if not base_url.startswith(('http://', 'https://')):
-    base_url = f"https://{base_url}"
-# Remove trailing slashes and ensure proper format
-base_url = base_url.rstrip('/')
-# Validate URL format
-try:
-    result = urlparse(base_url)
-    if not all([result.scheme, result.netloc]):
-        logger.error(f"Invalid wp-base-url: {base_url}")
-        raise ValueError(f"Invalid wp-base-url: {base_url}. Must be a valid URL (e.g., https://your-site.com)")
-except ValueError as e:
-    logger.error(f"Failed to parse wp-base-url: {str(e)}")
-    raise
-logger.info(f"Using base_url: {base_url}")
-
-# Assign other arguments
-wp_username = args.wp_username
-wp_app_password = args.wp_app_password
-scrape_location = args.scrape_location
+# Validate environment variables
+if not all([base_url, wp_username, wp_app_password, scrape_location]):
+    raise ValueError("Missing required environment variables: WP_BASE_URL, WP_USERNAME, WP_APP_PASSWORD, or SCRAPE_LOCATION")
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -302,8 +275,7 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
         "job_listing_type": [job_type_id] if (job_type_id := get_or_create_term(job_type, "job_type", WP_JOB_TYPE_URL, auth_headers)) else [],
         "job_listing_region": [job_region_id] if (job_region_id := get_or_create_term(location, "job_region", WP_JOB_REGION_URL, auth_headers)) else []
     }
-塞尔
-
+    
     try:
         response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=False)
         response.raise_for_status()
