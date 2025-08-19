@@ -12,6 +12,9 @@ on:
       scrape_location:
         description: 'Location for job scraping (e.g., Worldwide, New York)'
         required: true
+      wp_base_url:
+        description: 'WordPress Base URL (e.g., https://your-site.com)'
+        required: true
 
 jobs:
   scrape:
