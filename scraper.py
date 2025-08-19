@@ -19,16 +19,18 @@ parser.add_argument("--wp-base-url", required=True, help="WordPress base URL (e.
 parser.add_argument("--wp-username", required=True, help="WordPress username for API authentication")
 parser.add_argument("--wp-app-password", required=True, help="WordPress application password for API authentication")
 parser.add_argument("--scrape-location", required=True, help="Location for job scraping (e.g., Worldwide)")
+parser.add_argument("--wp-rest-nonce", required=True, help="WordPress REST API nonce")
 args = parser.parse_args()
 
-# Get GitHub token from environment (optional, as it may be used by the workflow)
+# Get GitHub token from environment (optional)
 github_token = os.getenv("GITHUB_TOKEN")
 
 # Assign arguments to variables
-base_url = args.wp_base_url
+base_url = args.wp_base_url.rstrip('/')
 wp_username = args.wp_username
 wp_app_password = args.wp_app_password
 scrape_location = args.scrape_location
+wp_rest_nonce = args.wp_rest_nonce
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -113,14 +115,14 @@ def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
         return None
     check_url = f"{wp_url}?search={term_name}"
     try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
+        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=True)
         response.raise_for_status()
         terms = response.json()
         for term in terms:
             if term['name'].lower() == term_name.lower():
                 return term['id']
         post_data = {"name": term_name, "slug": term_name.lower().replace(' ', '-')}
-        response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=10, verify=False)
+        response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=10, verify=True)
         response.raise_for_status()
         term = response.json()
         logger.info(f"Created new {taxonomy} term: {term_name}, ID: {term['id']}")
@@ -132,7 +134,7 @@ def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
 def check_existing_entry(title, scraped_type, company_name, auth_headers):
     check_url = f"{WP_URL}?search={title}&_fields=id,link,meta&context=view"
     try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
+        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=True)
         response.raise_for_status()
         posts = response.json()
         for post in posts:
@@ -168,18 +170,19 @@ def save_company_to_wordpress(index, company_data, auth_headers):
     attachment_id = 0
     if company_logo:
         try:
-            logo_response = requests.get(company_logo, headers=headers, timeout=10)
+            logo_response = requests.get(company_logo, headers=headers, timeout=10, verify=True)
             logo_response.raise_for_status()
             logo_headers = {
                 "Authorization": auth_headers["Authorization"],
                 "Content-Disposition": f'attachment; filename="{company_name}_logo.jpg"',
-                "Content-Type": logo_response.headers.get("content-type", "image/jpeg")
+                "Content-Type": logo_response.headers.get("content-type", "image/jpeg"),
+                "X-WP-Nonce": auth_headers["X-WP-Nonce"]
             }
-            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, verify=False)
+            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, timeout=10, verify=True)
             media_response.raise_for_status()
             attachment_id = media_response.json().get("id", 0)
             logger.info(f"Uploaded logo for {company_name}, Attachment ID: {attachment_id}")
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             logger.error(f"Failed to upload logo for {company_name}: {str(e)}")
 
     post_data = {
@@ -202,11 +205,16 @@ def save_company_to_wordpress(index, company_data, auth_headers):
         }
     }
     try:
-        response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=False)
+        response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=True)
         response.raise_for_status()
         post = response.json()
         logger.info(f"Successfully posted company {company_name}: Post ID {post.get('id')}")
         return post.get("id"), post.get("link")
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"Failed to post company {company_name}: {str(e)}")
+        if response.status_code == 403:
+            logger.error(f"403 Forbidden details: {response.text}")
+        return None, None
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to post company {company_name}: {str(e)}")
         return None, None
@@ -242,18 +250,19 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
     attachment_id = 0
     if company_logo:
         try:
-            logo_response = requests.get(company_logo, headers=headers, timeout=10)
+            logo_response = requests.get(company_logo, headers=headers, timeout=10, verify=True)
             logo_response.raise_for_status()
             logo_headers = {
                 "Authorization": auth_headers["Authorization"],
                 "Content-Disposition": f'attachment; filename="{company_name}_logo_job_{index}.jpg"',
-                "Content-Type": logo_response.headers.get("content-type", "image/jpeg")
+                "Content-Type": logo_response.headers.get("content-type", "image/jpeg"),
+                "X-WP-Nonce": auth_headers["X-WP-Nonce"]
             }
-            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, verify=False)
+            media_response = requests.post(WP_MEDIA_URL, headers=logo_headers, data=logo_response.content, timeout=10, verify=True)
             media_response.raise_for_status()
             attachment_id = media_response.json().get("id", 0)
             logger.info(f"Uploaded logo for job {job_title}, Attachment ID: {attachment_id}")
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             logger.error(f"Failed to upload logo for job {job_title}: {str(e)}")
 
     post_data = {
@@ -285,11 +294,16 @@ def save_job_to_wordpress(index, job_data, company_id, auth_headers):
     }
     
     try:
-        response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=False)
+        response = requests.post(WP_URL, json=post_data, headers=auth_headers, timeout=15, verify=True)
         response.raise_for_status()
         post = response.json()
         logger.info(f"Successfully posted job {job_title}: Post ID {post.get('id')}")
         return post.get("id"), post.get("link")
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"Failed to post job {job_title}: {str(e)}")
+        if response.status_code == 403:
+            logger.error(f"403 Forbidden details: {response.text}")
+        return None, None
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to post job {job_title}: {str(e)}")
         return None, None
@@ -477,7 +491,7 @@ def scrape_job_details(job_url):
         logger.info(f'Deduplicated location for {job_title}: {location}')
 
         environment = ''
-        env_element = soup.select(".topcard__flavor--metadata")
+        env_element = soup.select_one(".topcard__flavor--metadata")
         for elem in env_element:
             text = elem.get_text().strip().lower()
             if 'remote' in text or 'hybrid' in text or 'on-site' in text:
@@ -566,7 +580,7 @@ def scrape_job_details(job_url):
         if application_url:
             try:
                 time.sleep(5)
-                resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
+                resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True, verify=True)
                 resolved_application_url = resp_app.url
                 logger.info(f'Resolved Application URL: {resolved_application_url}')
                 
@@ -627,7 +641,7 @@ def scrape_job_details(job_url):
                 if company_website_url and 'linkedin.com' not in company_website_url:
                     try:
                         time.sleep(5)
-                        resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
+                        resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True, verify=True)
                         company_website_url = resp_company_web.url
                     except Exception:
                         company_website_url = ''
@@ -692,8 +706,21 @@ def main():
     auth = base64.b64encode(auth_string.encode()).decode()
     wp_headers = {
         "Authorization": f"Basic {auth}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-WP-Nonce": wp_rest_nonce
     }
+    
+    # Test authentication
+    try:
+        test_response = requests.get(f"{base_url}/wp-json/wp/v2/users/me", headers=wp_headers, timeout=10, verify=True)
+        test_response.raise_for_status()
+        logger.info(f"Authentication successful for user: {wp_username}")
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"Authentication test failed: {str(e)}")
+        if test_response.status_code == 403:
+            logger.error(f"403 Forbidden details: {test_response.text}")
+        return
     
     processed_ids = load_processed_ids()
     crawl(auth_headers=wp_headers, processed_ids=processed_ids)
