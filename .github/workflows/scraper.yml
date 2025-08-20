@@ -18,6 +18,11 @@ jobs:
       - name: Install dependencies
         run: |
           pip install requests beautifulsoup4 lxml
+          echo "Dependencies installed successfully"
 
       - name: Run scraper
-        run: python scraper.py
+        run: |
+          python scraper.py || {
+            echo "Scraper failed with exit code $?"
+            exit 1
+          }
