@@ -56,10 +56,10 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
 def check_scraper_status(auth_headers):
     """Check the scraper status from WordPress."""
     try:
-        response = requests.get(WP_SCRAPER_STATUS_URL, headers=auth_headers, timeout=10, verify=False)
+        response = requests.get(WP_SCRAPER_STATUS_URL, headers=auth_headers, timeout=5, verify=False)
         response.raise_for_status()
         status = response.json().get('status', 'stopped')
-        logger.info(f"Scraper status: {status}")
+        logger.info(f"Scraper status check: {status}")
         return status
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to check scraper status: {str(e)}")
@@ -115,14 +115,14 @@ def get_or_create_term(term_name, taxonomy, wp_url, auth_headers):
         return None
     check_url = f"{wp_url}?search={term_name}"
     try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
+        response = requests.get(check_url, headers=auth_headers, timeout=5, verify=False)
         response.raise_for_status()
         terms = response.json()
         for term in terms:
             if term['name'].lower() == term_name.lower():
                 return term['id']
         post_data = {"name": term_name, "slug": term_name.lower().replace(' ', '-')}
-        response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=10, verify=False)
+        response = requests.post(wp_url, json=post_data, headers=auth_headers, timeout=5, verify=False)
         response.raise_for_status()
         term = response.json()
         logger.info(f"Created new {taxonomy} term: {term_name}, ID: {term['id']}")
@@ -135,7 +135,7 @@ def check_existing_job(job_title, company_name, auth_headers):
     """Check if a job with the same title and company already exists on WordPress."""
     check_url = f"{WP_URL}?search={job_title}&meta_key=_company_name&meta_value={company_name}"
     try:
-        response = requests.get(check_url, headers=auth_headers, timeout=10, verify=False)
+        response = requests.get(check_url, headers=auth_headers, timeout=5, verify=False)
         response.raise_for_status()
         posts = response.json()
         if posts:
@@ -147,6 +147,10 @@ def check_existing_job(job_title, company_name, auth_headers):
         return None, None
 
 def save_company_to_wordpress(index, company_data, wp_headers):
+    if check_scraper_status(wp_headers) != 'running':
+        logger.info("Scraper stopped before saving company")
+        return None, None
+
     company_name = company_data.get("company_name", "")
     company_details = company_data.get("company_details", "")
     company_logo = company_data.get("company_logo", "")
@@ -208,6 +212,10 @@ def save_company_to_wordpress(index, company_data, wp_headers):
         return None, None
 
 def save_article_to_wordpress(index, job_data, company_id, auth_headers):
+    if check_scraper_status(auth_headers) != 'running':
+        logger.info("Scraper stopped before saving job")
+        return None, None
+
     job_title = job_data.get("job_title", "")
     job_description = job_data.get("job_description", "")
     job_type = job_data.get("job_type", "")
@@ -334,7 +342,7 @@ def save_last_page(page):
 def crawl(auth_headers, processed_ids):
     # Check initial scraper status
     if check_scraper_status(auth_headers) != 'running':
-        logger.info("Scraper stopped by status check")
+        logger.info("Scraper stopped by initial status check")
         print("Scraper is not running. Exiting.")
         return
 
@@ -346,7 +354,7 @@ def crawl(auth_headers, processed_ids):
     for i in range(start_page, 15):
         # Check status before processing each page
         if check_scraper_status(auth_headers) != 'running':
-            logger.info("Scraper stopped during execution")
+            logger.info("Scraper stopped during page processing")
             print("Scraper stopped by user. Exiting.")
             break
 
@@ -361,6 +369,7 @@ def crawl(auth_headers, processed_ids):
             response.raise_for_status()
             if "login" in response.url or "challenge" in response.url:
                 logger.error("Login or CAPTCHA detected, stopping crawl")
+                print("Login or CAPTCHA detected, stopping crawl")
                 break
             soup = BeautifulSoup(response.text, 'html.parser')
             job_list = soup.select("#main-content > section > ul > li > div > a")
@@ -374,7 +383,7 @@ def crawl(auth_headers, processed_ids):
                     print("Scraper stopped by user. Exiting.")
                     break
 
-                job_data = scrape_job_details(job_url)
+                job_data = scrape_job_details(job_url, auth_headers)
                 if not job_data:
                     logger.error(f"No data scraped for job: {job_url}")
                     print(f"Job (URL: {job_url}) failed to scrape: No data returned")
@@ -434,22 +443,26 @@ def crawl(auth_headers, processed_ids):
                 total_jobs += 1
                 
                 company_id, company_url = save_company_to_wordpress(index, job_dict, auth_headers)
-                job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
-                
-                if job_post_id:
-                    processed_ids.add(job_id)
-                    save_processed_id(job_id)
-                    logger.info(f"Processed and saved job: {job_id} - {job_title} at {company_name}")
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) successfully posted to WordPress. Post ID: {job_post_id}, URL {job_post_url}")
-                    success_count += 1
-                else:
-                    print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post to WordPress. Check logs for details.")
+                if company_id is None:
                     failure_count += 1
+                    continue
+
+                job_post_id, job_post_url = save_article_to_wordpress(index, job_dict, company_id, auth_headers)
+                if job_post_id is None:
+                    failure_count += 1
+                    continue
+                
+                processed_ids.add(job_id)
+                save_processed_id(job_id)
+                logger.info(f"Processed and saved job: {job_id} - {job_title} at {company_name}")
+                print(f"Job '{job_title}' at {company_name} (ID: {job_id}) successfully posted to WordPress. Post ID: {job_post_id}, URL {job_post_url}")
+                success_count += 1
             
             save_last_page(i)
         
         except Exception as e:
             logger.error(f'Error fetching job search page: {url} - {str(e)}')
+            print(f"Error fetching page {url}: {str(e)}")
             failure_count += 1
     
     print("\n--- Summary ---")
@@ -457,7 +470,11 @@ def crawl(auth_headers, processed_ids):
     print(f"Successfully posted: {success_count}")
     print(f"Failed to post or scrape: {failure_count}")
 
-def scrape_job_details(job_url):
+def scrape_job_details(job_url, auth_headers):
+    if check_scraper_status(auth_headers) != 'running':
+        logger.info("Scraper stopped before fetching job details")
+        return None
+
     logger.info(f'Fetching job details from: {job_url}')
     try:
         session = requests.Session()
@@ -486,6 +503,10 @@ def scrape_job_details(job_url):
             logger.info(f'Scraped Company URL: {company_url}')
         else:
             logger.info('No Company URL found')
+
+        if check_scraper_status(auth_headers) != 'running':
+            logger.info("Scraper stopped before fetching company details")
+            return None
 
         location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
         location = location.get_text().strip() if location else 'Mauritius'
@@ -590,6 +611,10 @@ def scrape_job_details(job_url):
         final_application_url = description_application_url if description_application_url else ''
 
         if application_url:
+            if check_scraper_status(auth_headers) != 'running':
+                logger.info("Scraper stopped before following application URL")
+                return None
+
             try:
                 time.sleep(5)
                 resp_app = session.get(application_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
@@ -644,6 +669,10 @@ def scrape_job_details(job_url):
         company_address = ''
 
         if company_url:
+            if check_scraper_status(auth_headers) != 'running':
+                logger.info("Scraper stopped before fetching company page")
+                return None
+
             logger.info(f'Fetching company page: {company_url}')
             try:
                 company_response = session.get(company_url, headers=headers, timeout=15)
@@ -668,6 +697,10 @@ def scrape_job_details(job_url):
                         logger.warning(f'No "url" param in LinkedIn redirect for {company_name}')
 
                 if company_website_url and 'linkedin.com' not in company_website_url:
+                    if check_scraper_status(auth_headers) != 'running':
+                        logger.info("Scraper stopped before resolving company website")
+                        return None
+
                     try:
                         time.sleep(5)
                         resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
@@ -693,6 +726,9 @@ def scrape_job_details(job_url):
                         if urls:
                             company_website_url = urls[0]
                             logger.info(f'Found company website in description: {company_website_url}')
+                            if check_scraper_status(auth_headers) != 'running':
+                                logger.info("Scraper stopped before resolving company website from description")
+                                return None
                             try:
                                 time.sleep(5)
                                 resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
