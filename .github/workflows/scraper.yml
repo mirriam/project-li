@@ -1,9 +1,7 @@
 name: Job Scraper
 
 on:
-  schedule:
-    - cron: '0 8 * * *'  # Runs every day at 8:00 UTC
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:  # Triggered manually via WordPress plugin
 
 jobs:
   scrape:
@@ -22,4 +20,4 @@ jobs:
           pip install requests beautifulsoup4 lxml
 
       - name: Run scraper
-        run: python scraper.py  # Replace with your script filename if different
+        run: python scraper.py
