@@ -29,6 +29,7 @@ WP_JOB_TYPE_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job_listing_typ
 WP_JOB_REGION_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job_listing_region"
 WP_SAVE_COMPANY_URL = "https://mauritius.mimusjobs.com/wp-json/scraper/v1/save-company"
 WP_SAVE_JOB_URL = "https://mauritius.mimusjobs.com/wp-json/scraper/v1/save-job"
+WP_SCRAPER_STATUS_URL = "https://mauritius.mimusjobs.com/wp-json/scraper/v1/get-status"
 WP_USERNAME = "mary"
 WP_APP_PASSWORD = "Piab Mwog pfiq pdfK BOGH hDEy"
 PROCESSED_IDS_FILE = "mauritius_processed_job_ids.csv"
@@ -42,7 +43,6 @@ JOB_TYPE_MAPPING = {
     "Internship": "internship",
     "Volunteer": "volunteer"
 }
-
 FRENCH_TO_ENGLISH_JOB_TYPE = {
     "Temps plein": "Full-time",
     "Temps partiel": "Part-time",
@@ -52,6 +52,18 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
     "Stage": "Internship",
     "Bénévolat": "Volunteer"
 }
+
+def check_scraper_status(auth_headers):
+    """Check the scraper status from WordPress."""
+    try:
+        response = requests.get(WP_SCRAPER_STATUS_URL, headers=auth_headers, timeout=10, verify=False)
+        response.raise_for_status()
+        status = response.json().get('status', 'stopped')
+        logger.info(f"Scraper status: {status}")
+        return status
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to check scraper status: {str(e)}")
+        return 'stopped'
 
 def sanitize_text(text, is_url=False):
     if not text:
@@ -68,8 +80,8 @@ def sanitize_text(text, is_url=False):
 
 def normalize_for_deduplication(text):
     """Normalize text for deduplication by removing spaces, punctuation, and converting to lowercase."""
-    text = re.sub(r'[^\w\s]', '', text)  # Remove punctuation
-    text = re.sub(r'\s+', '', text)      # Remove all whitespace
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\s+', '', text)
     return text.lower()
 
 def generate_job_id(job_title, company_name):
@@ -320,12 +332,24 @@ def save_last_page(page):
         logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
 
 def crawl(auth_headers, processed_ids):
+    # Check initial scraper status
+    if check_scraper_status(auth_headers) != 'running':
+        logger.info("Scraper stopped by status check")
+        print("Scraper is not running. Exiting.")
+        return
+
     success_count = 0
     failure_count = 0
     total_jobs = 0
     start_page = load_last_page()
     
-    for i in range(start_page, 15):  # Adjust range to continue from last page
+    for i in range(start_page, 15):
+        # Check status before processing each page
+        if check_scraper_status(auth_headers) != 'running':
+            logger.info("Scraper stopped during execution")
+            print("Scraper stopped by user. Exiting.")
+            break
+
         url = f'https://www.linkedin.com/jobs/search?keywords=&location=Mauritius&start={i * 25}'
         logger.info(f'Fetching job search page: {url}')
         time.sleep(random.uniform(5, 10))
@@ -344,6 +368,12 @@ def crawl(auth_headers, processed_ids):
             logger.info(f'Found {len(urls)} job URLs on page: {url}')
             
             for index, job_url in enumerate(urls):
+                # Check status before processing each job
+                if check_scraper_status(auth_headers) != 'running':
+                    logger.info("Scraper stopped during job processing")
+                    print("Scraper stopped by user. Exiting.")
+                    break
+
                 job_data = scrape_job_details(job_url)
                 if not job_data:
                     logger.error(f"No data scraped for job: {job_url}")
@@ -380,7 +410,7 @@ def crawl(auth_headers, processed_ids):
                     "final_application_email": job_data[24],
                     "final_application_url": job_data[25],
                     "resolved_application_url": job_data[26],
-                    "job_salary": ""  # Not scraped, placeholder
+                    "job_salary": ""
                 }
                 
                 job_title = job_dict.get("job_title", "Unknown Job")
@@ -416,7 +446,6 @@ def crawl(auth_headers, processed_ids):
                     print(f"Job '{job_title}' at {company_name} (ID: {job_id}) failed to post to WordPress. Check logs for details.")
                     failure_count += 1
             
-            # Save the current page as the last processed page
             save_last_page(i)
         
         except Exception as e:
