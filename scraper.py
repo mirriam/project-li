@@ -21,18 +21,30 @@ headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
 }
 
-# Constants for WordPress
-WP_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job-listings"
-WP_COMPANY_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/company"
-WP_MEDIA_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/media"
-WP_JOB_TYPE_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job_listing_type"
-WP_JOB_REGION_URL = "https://mauritius.mimusjobs.com/wp-json/wp/v2/job_listing_region"
-WP_SAVE_COMPANY_URL = "https://mauritius.mimusjobs.com/wp-json/scraper/v1/save-company"
-WP_SAVE_JOB_URL = "https://mauritius.mimusjobs.com/wp-json/scraper/v1/save-job"
-WP_SCRAPER_STATUS_URL = "https://mauritius.mimusjobs.com/wp-json/scraper/v1/get-status"
-WP_USERNAME = "mary"
-WP_APP_PASSWORD = "Piab Mwog pfiq pdfK BOGH hDEy"
-PROCESSED_IDS_FILE = "mauritius_processed_job_ids.csv"
+# Get environment variables (from GitHub Actions)
+WP_SITE_URL = os.getenv('WP_SITE_URL')  # Passed as input from plugin
+WP_USERNAME = os.getenv('WP_USERNAME')  # Set as GitHub secret
+WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')  # Set as GitHub secret
+COUNTRY = os.getenv('COUNTRY')  # Passed as input from plugin
+KEYWORD = os.getenv('KEYWORD', '')  # Passed as input from plugin, optional
+SECRET_TOKEN = os.getenv('SECRET_TOKEN', '')  # Optional for monetization/license check
+
+# Basic monetization check (replace with your logic, e.g., API call to validate token)
+if SECRET_TOKEN != 'your_secret_value':  # For monetization, validate against a fixed value or external service
+    logger.error("Invalid secret token. Scraper access denied.")
+    print("Invalid secret token. Exiting.")
+    exit(1)
+
+# Constants for WordPress (neutral, using env var)
+WP_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job-listings"
+WP_COMPANY_URL = f"{WP_SITE_URL}/wp-json/wp/v2/company"
+WP_MEDIA_URL = f"{WP_SITE_URL}/wp-json/wp/v2/media"
+WP_JOB_TYPE_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job_listing_type"
+WP_JOB_REGION_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job_listing_region"
+WP_SAVE_COMPANY_URL = f"{WP_SITE_URL}/wp-json/scraper/v1/save-company"
+WP_SAVE_JOB_URL = f"{WP_SITE_URL}/wp-json/scraper/v1/save-job"
+WP_SCRAPER_STATUS_URL = f"{WP_SITE_URL}/wp-json/scraper/v1/get-status"
+PROCESSED_IDS_FILE = "processed_job_ids.csv"
 LAST_PAGE_FILE = "last_processed_page.txt"
 JOB_TYPE_MAPPING = {
     "Full-time": "full-time",
@@ -200,10 +212,10 @@ def save_company_to_wordpress(index, company_data, wp_headers):
         res = response.json()
         if res.get("success"):
             logger.info(f"Successfully saved company {company_name}: Company ID {company_id}")
-            return company_id, "https://mauritius.mimusjobs.com/wp-content/uploads/companies.json"
+            return company_id, f"{WP_SITE_URL}/wp-content/uploads/companies.json"
         elif res.get("message") == "Company exists":
             logger.info(f"Found existing company {company_name}: Company ID {company_id}")
-            return company_id, "https://mauritius.mimusjobs.com/wp-content/uploads/companies.json"
+            return company_id, f"{WP_SITE_URL}/wp-content/uploads/companies.json"
         else:
             logger.error(f"Failed to save company {company_name}: {res}")
             return None, None
@@ -219,7 +231,7 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
     job_title = job_data.get("job_title", "")
     job_description = job_data.get("job_description", "")
     job_type = job_data.get("job_type", "")
-    location = job_data.get("location", "Mauritius")
+    location = job_data.get("location", COUNTRY)  # Use country from env if not scraped
     job_url = job_data.get("job_url", "")
     company_name = job_data.get("company_name", "")
     company_logo = job_data.get("company_logo", "")
@@ -286,10 +298,10 @@ def save_article_to_wordpress(index, job_data, company_id, auth_headers):
         res = response.json()
         if res.get("success"):
             logger.info(f"Successfully saved job {job_title}: Job ID {job_id}")
-            return job_id, "https://mauritius.mimusjobs.com/wp-content/uploads/jobs.json"
+            return job_id, f"{WP_SITE_URL}/wp-content/uploads/jobs.json"
         elif res.get("message") == "Job exists":
             logger.info(f"Found existing job {job_title}: Job ID {job_id}")
-            return job_id, "https://mauritius.mimusjobs.com/wp-content/uploads/jobs.json"
+            return job_id, f"{WP_SITE_URL}/wp-content/uploads/jobs.json"
         else:
             logger.error(f"Failed to save job {job_title}: {res}")
             return None, None
@@ -358,7 +370,7 @@ def crawl(auth_headers, processed_ids):
             print("Scraper stopped by user. Exiting.")
             break
 
-        url = f'https://www.linkedin.com/jobs/search?keywords=&location=Mauritius&start={i * 25}'
+        url = f'https://www.linkedin.com/jobs/search?keywords={KEYWORD}&location={COUNTRY}&start={i * 25}'
         logger.info(f'Fetching job search page: {url}')
         time.sleep(random.uniform(5, 10))
         try:
@@ -509,7 +521,7 @@ def scrape_job_details(job_url, auth_headers):
             return None
 
         location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
-        location = location.get_text().strip() if location else 'Mauritius'
+        location = location.get_text().strip() if location else COUNTRY
         location_parts = [part.strip() for part in location.split(',') if part.strip()]
         location = ', '.join(dict.fromkeys(location_parts))
         logger.info(f'Deduplicated location for {job_title}: {location}')
@@ -820,6 +832,11 @@ def scrape_job_details(job_url, auth_headers):
         return None
 
 def main():
+    if not all([WP_SITE_URL, WP_USERNAME, WP_APP_PASSWORD, COUNTRY]):
+        logger.error("Missing required environment variables (WP_SITE_URL, WP_USERNAME, WP_APP_PASSWORD, COUNTRY). Exiting.")
+        print("Missing required environment variables. Exiting.")
+        exit(1)
+
     auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
     auth = base64.b64encode(auth_string.encode()).decode()
     wp_headers = {
