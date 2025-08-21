@@ -1,13 +1,31 @@
 name: Job Scraper
 
 on:
-  workflow_dispatch:  # Triggered manually via WordPress plugin
+  workflow_dispatch:
+    inputs:
+      country:
+        description: 'Country for job search'
+        required: true
+      keyword:
+        description: 'Keyword for job search'
+        required: false
+        default: ''
+      wp_site_url:
+        description: 'WordPress site URL'
+        required: true
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    env:
+      COUNTRY: ${{ inputs.country }}
+      KEYWORD: ${{ inputs.keyword }}
+      WP_SITE_URL: ${{ inputs.wp_site_url }}
+      WP_USERNAME: ${{ secrets.WP_USERNAME }}
+      WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+      SECRET_TOKEN: 'your_secret_value'  # Replace with your fixed secret for monetization check
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -17,12 +35,16 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4 lxml
-          echo "Dependencies installed successfully"
+          pip install requests beautifulsoup4 lxml urllib3
 
       - name: Run scraper
+        run: python scraper.py  # Assume your Python file is named scraper.py
+
+      - name: Commit and push changes (persist processed files)
         run: |
-          python scraper.py || {
-            echo "Scraper failed with exit code $?"
-            exit 1
-          }
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add processed_job_ids.csv last_processed_page.txt || true
+          git commit -m "Update processed job IDs and last page after scrape" || echo "No changes to commit"
+          git push
+        if: always()  # Run even if previous steps fail
