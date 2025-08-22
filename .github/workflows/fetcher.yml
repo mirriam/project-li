@@ -7,7 +7,7 @@ on:
         description: 'Country for job search'
         required: true
       keyword:
-        description: 'Keyword for job search'
+        description: 'Keyword for job search (optional)'
         required: false
         default: ''
       wp_site_url:
@@ -15,38 +15,40 @@ on:
         required: true
 
 jobs:
-  scrape:
+  fetch-jobs:
     runs-on: ubuntu-latest
-    env:
-      COUNTRY: ${{ inputs.country }}
-      KEYWORD: ${{ inputs.keyword }}
-      WP_SITE_URL: ${{ inputs.wp_site_url }}
-      WP_USERNAME: ${{ secrets.WP_USERNAME }}
-      WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-      SECRET_TOKEN: ${{ secrets.SECRET_TOKEN }}
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          pip install requests beautifulsoup4 lxml urllib3
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests beautifulsoup4
 
-      - name: Run fetcher
-        run: python fetcher.py
+    - name: Run fetcher script
+      env:
+        WP_SITE_URL: ${{ github.event.inputs.wp_site_url }}
+        WP_USERNAME: ${{ secrets.WP_USERNAME }}
+        WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        COUNTRY: ${{ github.event.inputs.country }}
+        KEYWORD: ${{ github.event.inputs.keyword }}
+        SECRET_TOKEN: ${{ secrets.SECRET_TOKEN }}
+      run: python fetcher.py
 
-      - name: Commit and push changes (persist processed files)
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git add processed_job_ids.csv last_processed_page.txt || true
-          git commit -m "Update processed job IDs and last page after fetch" || echo "No changes to commit"
-          git push
-        if: always()
-        env:
-          SECRET_TOKEN: ${{ secrets.SECRET_TOKEN }}
+    - name: Commit and push changes (persist processed files)
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        git add processed_job_ids.csv last_processed_page.txt || true
+        git commit -m "Update processed job IDs and last page after fetch" || echo "No changes to commit"
+        git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.FETCHER_TOKEN }}
+      if: always()
