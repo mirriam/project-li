@@ -22,7 +22,7 @@ jobs:
           pip install requests
       - name: Run fetcher
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.FETCHER_TOKEN }}
           WP_SITE_URL: ${{ inputs.wp_site_url }}
           COUNTRY: ${{ inputs.country }}
           KEYWORD: ${{ inputs.keyword }}
