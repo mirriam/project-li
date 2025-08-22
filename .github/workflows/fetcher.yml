@@ -1,29 +1,42 @@
 name: Job Fetcher
+
 on:
   workflow_dispatch:
     inputs:
       country:
-        description: 'Country for job search'
+        description: 'Country for job search (e.g., United States)'
+        required: true
       keyword:
-        description: 'Keyword for job search'
+        description: 'Optional keyword for job search (e.g., software engineer)'
+        required: false
+        default: ''
       wp_site_url:
-        description: 'WordPress site URL'
+        description: 'WordPress site URL (e.g., https://example.com)'
+        required: true
+
 jobs:
-  fetch:
+  fetch-jobs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+
       - name: Install dependencies
         run: |
-          pip install requests
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 urllib3
+
       - name: Run fetcher
         env:
-          GITHUB_TOKEN: ${{ secrets.FETCHER_TOKEN }}
-          WP_SITE_URL: ${{ inputs.wp_site_url }}
-          COUNTRY: ${{ inputs.country }}
-          KEYWORD: ${{ inputs.keyword }}
+          WP_SITE_URL: ${{ github.event.inputs.wp_site_url }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          COUNTRY: ${{ github.event.inputs.country }}
+          KEYWORD: ${{ github.event.inputs.keyword }}
+          FETCHER_TOKEN: ${{ secrets.FETCHER_TOKEN }}
         run: python fetcher.py
