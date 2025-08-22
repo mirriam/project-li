@@ -23,13 +23,13 @@ headers = {
 
 # Get environment variables (from Service)
 WP_SITE_URL = os.getenv('WP_SITE_URL')  # Passed as input from plugin
-WP_USERNAME = os.getenv('WP_USERNAME')  # Set as Service secret
-WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')  # Set as Service secret
+WP_USERNAME = os.getenv('WP_USERNAME')  # Try environment variable first
+WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')  # Try environment variable first
 COUNTRY = os.getenv('COUNTRY')  # Passed as input from plugin
 KEYWORD = os.getenv('KEYWORD', '')  # Passed as input from plugin, optional
 FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')  # Optional for monetization/license check
 
-# Constants for WordPress (neutral, using env var)
+# Constants for WordPress
 WP_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job-listings"
 WP_COMPANY_URL = f"{WP_SITE_URL}/wp-json/wp/v2/company"
 WP_MEDIA_URL = f"{WP_SITE_URL}/wp-json/wp/v2/media"
@@ -38,6 +38,7 @@ WP_JOB_REGION_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job_listing_region"
 WP_SAVE_COMPANY_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-company"
 WP_SAVE_JOB_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-job"
 WP_FETCHER_STATUS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-status"
+WP_CREDENTIALS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-credentials"
 PROCESSED_IDS_FILE = "processed_job_ids.csv"
 LAST_PAGE_FILE = "last_processed_page.txt"
 JOB_TYPE_MAPPING = {
@@ -58,6 +59,30 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
     "Stage": "Internship",
     "Bénévolat": "Volunteer"
 }
+
+def fetch_credentials():
+    """Fetch WordPress credentials from the REST API if not provided in environment."""
+    global WP_USERNAME, WP_APP_PASSWORD
+    if WP_USERNAME and WP_APP_PASSWORD:
+        logger.info("Using credentials from environment variables")
+        return True
+    try:
+        response = requests.get(WP_CREDENTIALS_URL, timeout=5, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        if not data.get('success'):
+            logger.error(f"Failed to fetch credentials: {data.get('message', 'Unknown error')}")
+            return False
+        WP_USERNAME = data.get('wp_username')
+        WP_APP_PASSWORD = data.get('wp_app_password')
+        if not WP_USERNAME or not WP_APP_PASSWORD:
+            logger.error("Credentials fetched but empty or invalid")
+            return False
+        logger.info("Successfully fetched credentials from WordPress")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch credentials from {WP_CREDENTIALS_URL}: {str(e)}")
+        return False
 
 def check_fetcher_status(auth_headers):
     """Check the fetcher status from WordPress."""
@@ -738,57 +763,51 @@ def scrape_job_details(job_url, auth_headers):
                                 time.sleep(5)
                                 resp_company_web = session.get(company_website_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
                                 company_website_url = resp_company_web.url
-                                logger.info(f'Resolved Company Website URL from description: {company_website_url}')
+                                logger.info(f'Resolved Company Website URL: {company_website_url}')
                             except Exception as e:
-                                logger.error(f'Failed to resolve company website URL from description: {str(e)}')
+                                logger.error(f'Failed to resolve company website from description: {str(e)}')
                                 company_website_url = ''
-                        else:
-                            logger.warning(f'No valid company website URL found in description for {company_name}')
-                            company_website_url = ''
-                    else:
-                        logger.warning(f'No company description found for {company_name}')
-                        company_website_url = ''
 
-                if company_website_url and 'linkedin.com' in company_website_url:
-                    logger.warning(f'Skipping LinkedIn URL for company website: {company_website_url}')
-                    company_website_url = ''
-
-                def get_company_detail(label):
-                    elements = company_soup.select("section.core-section-container.core-section-container--with-border > div > dl > div")
-                    for elem in elements:
-                        dt = elem.find("dt")
-                        if dt and dt.get_text().strip().lower() == label.lower():
-                            dd = elem.find("dd")
-                            return dd.get_text().strip() if dd else ''
-                    return ''
-
-                company_industry = get_company_detail("Industry")
+                company_industry_elem = company_soup.select_one("dl > div:nth-child(2) > dd")
+                company_industry = company_industry_elem.get_text().strip() if company_industry_elem else ''
                 logger.info(f'Scraped Company Industry: {company_industry}')
 
-                company_size = get_company_detail("Company size")
+                company_size_elem = company_soup.select_one("dl > div:nth-child(3) > dd")
+                company_size = company_size_elem.get_text().strip() if company_size_elem else ''
                 logger.info(f'Scraped Company Size: {company_size}')
 
-                company_headquarters = get_company_detail("Headquarters")
+                company_headquarters_elem = company_soup.select_one("dl > div:nth-child(4) > dd")
+                company_headquarters = company_headquarters_elem.get_text().strip() if company_headquarters_elem else ''
                 logger.info(f'Scraped Company Headquarters: {company_headquarters}')
 
-                company_type = get_company_detail("Type")
+                company_type_elem = company_soup.select_one("dl > div:nth-child(5) > dd")
+                company_type = company_type_elem.get_text().strip() if company_type_elem else ''
                 logger.info(f'Scraped Company Type: {company_type}')
 
-                company_founded = get_company_detail("Founded")
+                company_founded_elem = company_soup.select_one("dl > div:nth-child(6) > dd")
+                company_founded = company_founded_elem.get_text().strip() if company_founded_elem else ''
                 logger.info(f'Scraped Company Founded: {company_founded}')
 
-                company_specialties = get_company_detail("Specialties")
+                company_specialties_elem = company_soup.select_one("dl > div:nth-child(7) > dd")
+                company_specialties = company_specialties_elem.get_text().strip() if company_specialties_elem else ''
                 logger.info(f'Scraped Company Specialties: {company_specialties}')
 
-                company_address = company_soup.select_one("#address-0")
-                company_address = company_address.get_text().strip() if company_address else company_headquarters
-                logger.info(f'Scraped Company Address: {company_address}')
-            except Exception as e:
-                logger.error(f'Error fetching company page: {company_url} - {str(e)}')
-        else:
-            logger.info('No company URL, skipping company details scrape')
+                company_address = company_headquarters if company_headquarters else location
+                logger.info(f'Set Company Address: {company_address}')
 
-        row = [
+            except Exception as e:
+                logger.error(f'Failed to scrape company page {company_url}: {str(e)}')
+                company_website_url = ''
+                company_industry = ''
+                company_size = ''
+                company_headquarters = ''
+                company_type = ''
+                company_founded = ''
+                company_specialties = ''
+                company_address = location
+                logger.info(f'Using fallback company address: {company_address}')
+
+        return (
             job_title,
             company_logo,
             company_name,
@@ -814,31 +833,31 @@ def scrape_job_details(job_url, auth_headers):
             description_application_info,
             resolved_application_info,
             final_application_email,
-            final_application_url,
-            resolved_application_url
-        ]
-        logger.info(f'Full scraped row for job: {str(row)[:200] + "..."}')
-        return row
+            final_application_url
+        )
 
     except Exception as e:
-        logger.error(f'Error in scrape_job_details for {job_url}: {str(e)}')
+        logger.error(f'Failed to scrape job details from {job_url}: {str(e)}')
         return None
 
 def main():
-    if not all([WP_SITE_URL, WP_USERNAME, WP_APP_PASSWORD, COUNTRY]):
-        logger.error("Missing required environment variables (WP_SITE_URL, WP_USERNAME, WP_APP_PASSWORD, COUNTRY). Exiting.")
-        print("Missing required environment variables. Exiting.")
-        exit(1)
+    # Fetch credentials if not provided
+    if not fetch_credentials():
+        logger.error("Cannot proceed without valid WordPress credentials")
+        print("Error: Cannot proceed without valid WordPress credentials")
+        return
 
+    # Create authentication headers
     auth_string = f"{WP_USERNAME}:{WP_APP_PASSWORD}"
-    auth = base64.b64encode(auth_string.encode()).decode()
-    wp_headers = {
-        "Authorization": f"Basic {auth}",
-        "Content-Type": "application/json"
+    auth_headers = {
+        "Authorization": f"Basic {base64.b64encode(auth_string.encode()).decode()}"
     }
-    
+
+    # Load processed job IDs
     processed_ids = load_processed_ids()
-    crawl(auth_headers=wp_headers, processed_ids=processed_ids)
+
+    # Start crawling
+    crawl(auth_headers, processed_ids)
 
 if __name__ == "__main__":
     main()
