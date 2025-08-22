@@ -31,6 +31,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 urllib3
 
+      - name: Verify FETCHER_TOKEN
+        run: |
+          if [ -z "$FETCHER_TOKEN" ] || ! echo "$FETCHER_TOKEN" | grep -q "^github_pat_"; then
+            echo "Error: FETCHER_TOKEN is missing or does not start with 'github_pat_'. Please set a valid GitHub Personal Access Token in GitHub secrets."
+            exit 1
+          else
+            echo "FETCHER_TOKEN is set and valid."
+          fi
+        env:
+          FETCHER_TOKEN: ${{ secrets.FETCHER_TOKEN }}
+
       - name: Run fetcher
         env:
           WP_SITE_URL: ${{ github.event.inputs.wp_site_url }}
