@@ -21,19 +21,13 @@ headers = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
 }
 
-# Get environment variables (from GitHub Actions)
+# Get environment variables (from Service)
 WP_SITE_URL = os.getenv('WP_SITE_URL')  # Passed as input from plugin
-WP_USERNAME = os.getenv('WP_USERNAME')  # Set as GitHub secret
-WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')  # Set as GitHub secret
+WP_USERNAME = os.getenv('WP_USERNAME')  # Set as Service secret
+WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')  # Set as Service secret
 COUNTRY = os.getenv('COUNTRY')  # Passed as input from plugin
 KEYWORD = os.getenv('KEYWORD', '')  # Passed as input from plugin, optional
-SECRET_TOKEN = os.getenv('SECRET_TOKEN', '')  # Optional for monetization/license check
-
-# Basic monetization check (replace with your logic, e.g., API call to validate token)
-if SECRET_TOKEN != 'your_secret_value':  # For monetization, validate against a fixed value or external service
-    logger.error("Invalid secret token. Scraper access denied.")
-    print("Invalid secret token. Exiting.")
-    exit(1)
+FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')  # Optional for monetization/license check
 
 # Constants for WordPress (neutral, using env var)
 WP_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job-listings"
@@ -41,9 +35,9 @@ WP_COMPANY_URL = f"{WP_SITE_URL}/wp-json/wp/v2/company"
 WP_MEDIA_URL = f"{WP_SITE_URL}/wp-json/wp/v2/media"
 WP_JOB_TYPE_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job_listing_type"
 WP_JOB_REGION_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job_listing_region"
-WP_SAVE_COMPANY_URL = f"{WP_SITE_URL}/wp-json/scraper/v1/save-company"
-WP_SAVE_JOB_URL = f"{WP_SITE_URL}/wp-json/scraper/v1/save-job"
-WP_SCRAPER_STATUS_URL = f"{WP_SITE_URL}/wp-json/scraper/v1/get-status"
+WP_SAVE_COMPANY_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-company"
+WP_SAVE_JOB_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-job"
+WP_FETCHER_STATUS_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/get-status"
 PROCESSED_IDS_FILE = "processed_job_ids.csv"
 LAST_PAGE_FILE = "last_processed_page.txt"
 JOB_TYPE_MAPPING = {
@@ -65,16 +59,16 @@ FRENCH_TO_ENGLISH_JOB_TYPE = {
     "Bénévolat": "Volunteer"
 }
 
-def check_scraper_status(auth_headers):
-    """Check the scraper status from WordPress."""
+def check_fetcher_status(auth_headers):
+    """Check the fetcher status from WordPress."""
     try:
-        response = requests.get(WP_SCRAPER_STATUS_URL, headers=auth_headers, timeout=5, verify=False)
+        response = requests.get(WP_FETCHER_STATUS_URL, headers=auth_headers, timeout=5, verify=False)
         response.raise_for_status()
         status = response.json().get('status', 'stopped')
-        logger.info(f"Scraper status check: {status}")
+        logger.info(f"Fetcher status check: {status}")
         return status
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to check scraper status: {str(e)}")
+        logger.error(f"Failed to check fetcher status: {str(e)}")
         return 'stopped'
 
 def sanitize_text(text, is_url=False):
@@ -159,8 +153,8 @@ def check_existing_job(job_title, company_name, auth_headers):
         return None, None
 
 def save_company_to_wordpress(index, company_data, wp_headers):
-    if check_scraper_status(wp_headers) != 'running':
-        logger.info("Scraper stopped before saving company")
+    if check_fetcher_status(wp_headers) != 'running':
+        logger.info("Fetcher stopped before saving company")
         return None, None
 
     company_name = company_data.get("company_name", "")
@@ -224,8 +218,8 @@ def save_company_to_wordpress(index, company_data, wp_headers):
         return None, None
 
 def save_article_to_wordpress(index, job_data, company_id, auth_headers):
-    if check_scraper_status(auth_headers) != 'running':
-        logger.info("Scraper stopped before saving job")
+    if check_fetcher_status(auth_headers) != 'running':
+        logger.info("Fetcher stopped before saving job")
         return None, None
 
     job_title = job_data.get("job_title", "")
@@ -352,10 +346,10 @@ def save_last_page(page):
         logger.error(f"Failed to save last page to {LAST_PAGE_FILE}: {str(e)}")
 
 def crawl(auth_headers, processed_ids):
-    # Check initial scraper status
-    if check_scraper_status(auth_headers) != 'running':
-        logger.info("Scraper stopped by initial status check")
-        print("Scraper is not running. Exiting.")
+    # Check initial fetcher status
+    if check_fetcher_status(auth_headers) != 'running':
+        logger.info("Fetcher stopped by initial status check")
+        print("Fetcher is not running. Exiting.")
         return
 
     success_count = 0
@@ -365,9 +359,9 @@ def crawl(auth_headers, processed_ids):
     
     for i in range(start_page, 15):
         # Check status before processing each page
-        if check_scraper_status(auth_headers) != 'running':
-            logger.info("Scraper stopped during page processing")
-            print("Scraper stopped by user. Exiting.")
+        if check_fetcher_status(auth_headers) != 'running':
+            logger.info("Fetcher stopped during page processing")
+            print("Fetcher stopped by user. Exiting.")
             break
 
         url = f'https://www.linkedin.com/jobs/search?keywords={KEYWORD}&location={COUNTRY}&start={i * 25}'
@@ -390,9 +384,9 @@ def crawl(auth_headers, processed_ids):
             
             for index, job_url in enumerate(urls):
                 # Check status before processing each job
-                if check_scraper_status(auth_headers) != 'running':
-                    logger.info("Scraper stopped during job processing")
-                    print("Scraper stopped by user. Exiting.")
+                if check_fetcher_status(auth_headers) != 'running':
+                    logger.info("Fetcher stopped during job processing")
+                    print("Fetcher stopped by user. Exiting.")
                     break
 
                 job_data = scrape_job_details(job_url, auth_headers)
@@ -430,7 +424,6 @@ def crawl(auth_headers, processed_ids):
                     "resolved_application_info": job_data[23],
                     "final_application_email": job_data[24],
                     "final_application_url": job_data[25],
-                    "resolved_application_url": job_data[26],
                     "job_salary": ""
                 }
                 
@@ -483,8 +476,8 @@ def crawl(auth_headers, processed_ids):
     print(f"Failed to post or scrape: {failure_count}")
 
 def scrape_job_details(job_url, auth_headers):
-    if check_scraper_status(auth_headers) != 'running':
-        logger.info("Scraper stopped before fetching job details")
+    if check_fetcher_status(auth_headers) != 'running':
+        logger.info("Fetcher stopped before fetching job details")
         return None
 
     logger.info(f'Fetching job details from: {job_url}')
@@ -516,8 +509,8 @@ def scrape_job_details(job_url, auth_headers):
         else:
             logger.info('No Company URL found')
 
-        if check_scraper_status(auth_headers) != 'running':
-            logger.info("Scraper stopped before fetching company details")
+        if check_fetcher_status(auth_headers) != 'running':
+            logger.info("Fetcher stopped before fetching company details")
             return None
 
         location = soup.select_one(".topcard__flavor.topcard__flavor--bullet")
@@ -591,7 +584,7 @@ def scrape_job_details(job_url, auth_headers):
             logger.info(f'Raw Job Description (length): {len(job_description)}')
             job_description = re.sub(r'(?i)(?:\s*Show\s+more\s*$|\s*Show\s+less\s*$)', '', job_description, flags=re.MULTILINE).strip()
             job_description = split_paragraphs(job_description, max_length=200)
-            logger.info(f'Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.split('\n\n'))}')
+            logger.info(f"Scraped Job Description (length): {len(job_description)}, Paragraphs: {len(job_description.splitlines())}")
         else:
             logger.warning(f"No job description container found for {job_title}")
 
@@ -623,8 +616,8 @@ def scrape_job_details(job_url, auth_headers):
         final_application_url = description_application_url if description_application_url else ''
 
         if application_url:
-            if check_scraper_status(auth_headers) != 'running':
-                logger.info("Scraper stopped before following application URL")
+            if check_fetcher_status(auth_headers) != 'running':
+                logger.info("Fetcher stopped before following application URL")
                 return None
 
             try:
@@ -681,8 +674,8 @@ def scrape_job_details(job_url, auth_headers):
         company_address = ''
 
         if company_url:
-            if check_scraper_status(auth_headers) != 'running':
-                logger.info("Scraper stopped before fetching company page")
+            if check_fetcher_status(auth_headers) != 'running':
+                logger.info("Fetcher stopped before fetching company page")
                 return None
 
             logger.info(f'Fetching company page: {company_url}')
@@ -709,8 +702,8 @@ def scrape_job_details(job_url, auth_headers):
                         logger.warning(f'No "url" param in LinkedIn redirect for {company_name}')
 
                 if company_website_url and 'linkedin.com' not in company_website_url:
-                    if check_scraper_status(auth_headers) != 'running':
-                        logger.info("Scraper stopped before resolving company website")
+                    if check_fetcher_status(auth_headers) != 'running':
+                        logger.info("Fetcher stopped before resolving company website")
                         return None
 
                     try:
@@ -738,8 +731,8 @@ def scrape_job_details(job_url, auth_headers):
                         if urls:
                             company_website_url = urls[0]
                             logger.info(f'Found company website in description: {company_website_url}')
-                            if check_scraper_status(auth_headers) != 'running':
-                                logger.info("Scraper stopped before resolving company website from description")
+                            if check_fetcher_status(auth_headers) != 'running':
+                                logger.info("Fetcher stopped before resolving company website from description")
                                 return None
                             try:
                                 time.sleep(5)
