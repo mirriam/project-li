@@ -27,12 +27,22 @@ KEYWORD = os.getenv('KEYWORD', '')
 SECRET_TOKEN = os.getenv('SECRET_TOKEN', '')
 
 # WARNING: Scraping LinkedIn may violate their terms of service. Ensure you have permission or use their official API.
-# Replace the secret token validation with a call to your monetization server (e.g., https://your-site.com/validate).
+# Validate SECRET_TOKEN against your monetization server
 if not SECRET_TOKEN:
     logger.error("Missing secret token. Fetcher access denied.")
     print("Missing secret token. Exiting.")
     exit(1)
-# Example: requests.post('https://your-site.com/validate', json={'token': SECRET_TOKEN}).raise_for_status()
+try:
+    response = requests.post('https://your-site.com/validate', json={'token': SECRET_TOKEN}, timeout=5)
+    response.raise_for_status()
+    if not response.json().get('valid'):
+        logger.error("Invalid secret token. Fetcher access denied.")
+        print("Invalid secret token. Exiting.")
+        exit(1)
+except requests.exceptions.RequestException as e:
+    logger.error(f"Failed to validate secret token: {str(e)}")
+    print("Secret token validation failed. Exiting.")
+    exit(1)
 
 WP_SAVE_COMPANY_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-company"
 WP_SAVE_JOB_URL = f"{WP_SITE_URL}/wp-json/fetcher/v1/save-job"
