@@ -27,13 +27,15 @@ WP_USERNAME = os.getenv('WP_USERNAME')  # Set as Service secret
 WP_APP_PASSWORD = os.getenv('WP_APP_PASSWORD')  # Set as Service secret
 COUNTRY = os.getenv('COUNTRY')  # Passed as input from plugin
 KEYWORD = os.getenv('KEYWORD', '')  # Passed as input from plugin, optional
-FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')  # Optional for monetization/license check
+FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')  # GitHub PAT for both workflow and monetization
 
 # Validate FETCHER_TOKEN format for GitHub PAT
 if not FETCHER_TOKEN or not FETCHER_TOKEN.startswith('github_pat_'):
-    logger.error("Invalid or missing FETCHER_TOKEN. Expected a GitHub Personal Access Token starting with 'github_pat_'.")
+    logger.error("Invalid or missing FETCHER_TOKEN. Expected a GitHub Personal Access Token starting with 'github_pat_'. Please check GitHub Actions secrets or WordPress settings.")
     print("Invalid or missing FETCHER_TOKEN. Exiting.")
     exit(1)
+else:
+    logger.info("FETCHER_TOKEN validated successfully.")
 
 # Constants for WordPress (neutral, using env var)
 WP_URL = f"{WP_SITE_URL}/wp-json/wp/v2/job-listings"
