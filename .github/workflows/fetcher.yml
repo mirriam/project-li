@@ -13,6 +13,12 @@ on:
       wp_site_url:
         description: 'WordPress site URL (e.g., https://example.com)'
         required: true
+      wp_username:
+        description: 'WordPress username for REST API authentication'
+        required: true
+      wp_app_password:
+        description: 'WordPress application password for REST API authentication'
+        required: true
 
 jobs:
   fetch-jobs:
@@ -34,8 +40,8 @@ jobs:
       - name: Run fetcher
         env:
           WP_SITE_URL: ${{ github.event.inputs.wp_site_url }}
-          WP_USERNAME: ${{ secrets.WP_USERNAME }}
-          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USERNAME: ${{ github.event.inputs.wp_username }}
+          WP_APP_PASSWORD: ${{ github.event.inputs.wp_app_password }}
           COUNTRY: ${{ github.event.inputs.country }}
           KEYWORD: ${{ github.event.inputs.keyword }}
           FETCHER_TOKEN: ${{ secrets.FETCHER_TOKEN }}
