@@ -4,51 +4,39 @@ on:
   workflow_dispatch:
     inputs:
       country:
-        description: 'Country for job search'
+        description: 'Country for job search (e.g., United States)'
         required: true
       keyword:
-        description: 'Keyword for job search (optional)'
+        description: 'Optional keyword for job search (e.g., software engineer)'
         required: false
         default: ''
       wp_site_url:
-        description: 'WordPress site URL'
+        description: 'WordPress site URL (e.g., https://example.com)'
         required: true
 
 jobs:
   fetch-jobs:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install requests beautifulsoup4
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 urllib3
 
-    - name: Run fetcher script
-      env:
-        WP_SITE_URL: ${{ github.event.inputs.wp_site_url }}
-        WP_USERNAME: ${{ secrets.WP_USERNAME }}
-        WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-        COUNTRY: ${{ github.event.inputs.country }}
-        KEYWORD: ${{ github.event.inputs.keyword }}
-        SECRET_TOKEN: ${{ secrets.SECRET_TOKEN }}
-      run: python fetcher.py
-
-    - name: Commit and push changes (persist processed files)
-      run: |
-        git config --global user.name "GitHub Actions"
-        git config --global user.email "actions@github.com"
-        git add processed_job_ids.csv last_processed_page.txt || true
-        git commit -m "Update processed job IDs and last page after fetch" || echo "No changes to commit"
-        git push
-      env:
-        GITHUB_TOKEN: ${{ secrets.FETCHER_TOKEN }}
-      if: always()
+      - name: Run fetcher
+        env:
+          WP_SITE_URL: ${{ github.event.inputs.wp_site_url }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          COUNTRY: ${{ github.event.inputs.country }}
+          KEYWORD: ${{ github.event.inputs.keyword }}
+          FETCHER_TOKEN: ${{ secrets.FETCHER_TOKEN }}
+        run: python fetcher.py
