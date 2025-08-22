@@ -29,10 +29,10 @@ COUNTRY = os.getenv('COUNTRY')  # Passed as input from plugin
 KEYWORD = os.getenv('KEYWORD', '')  # Passed as input from plugin, optional
 FETCHER_TOKEN = os.getenv('FETCHER_TOKEN', '')  # Optional for monetization/license check
 
-# Basic monetization check (replace with your logic, e.g., API call to validate token)
-if FETCHER_TOKEN != 'your_secret_value':  # For monetization, validate against a fixed value or external service
-    logger.error("Invalid fetcher token. Fetcher access denied.")
-    print("Invalid fetcher token. Exiting.")
+# Validate FETCHER_TOKEN format for GitHub PAT
+if not FETCHER_TOKEN or not FETCHER_TOKEN.startswith('github_pat_'):
+    logger.error("Invalid or missing FETCHER_TOKEN. Expected a GitHub Personal Access Token starting with 'github_pat_'.")
+    print("Invalid or missing FETCHER_TOKEN. Exiting.")
     exit(1)
 
 # Constants for WordPress (neutral, using env var)
